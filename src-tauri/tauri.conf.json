@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "lterm",
-        "width": 800,
-        "height": 600
+        "width": 1100,
+        "height": 700,
+        "minWidth": 640,
+        "minHeight": 400
       }
     ],
     "security": {
@@ -30,6 +32,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "lterm",
+    "copyright": "MIT",
+    "category": "DeveloperTool"
   }
 }

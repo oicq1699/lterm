@@ -2,12 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { Terminal } from '@xterm/xterm';
-  import { FitAddon } from '@xterm/addon-fit';
-  import { SearchAddon } from '@xterm/addon-search';
-  import { Unicode11Addon } from '@xterm/addon-unicode11';
-  import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import '@xterm/xterm/css/xterm.css';
+  import Session from '$lib/Session.svelte';
 
   type Profile = {
     id: string; name: string; host: string; port: number; username: string;
@@ -16,6 +11,7 @@
     created_at: number; updated_at: number;
   };
   type Hit = { server: Profile; score: number };
+  type Tab = { sid: string; profile: Profile; alive: boolean };
 
   let servers: Profile[] = $state([]);
   let hits: Hit[] = $state([]);
@@ -23,23 +19,23 @@
   let showForm = $state(false);
   let draft: Profile = $state(emptyDraft());
   let error = $state('');
-  let connectedId = $state<string | null>(null);
-  let closedReason = $state('');
-  let lastProfile = $state<Profile | null>(null);
 
-  // ---- 用户偏好（持久化到 localStorage）----
+  let tabs = $state<Tab[]>([]);
+  let activeIdx = $state(-1);
+  let paneEl: HTMLDivElement | undefined = $state();
+  let fitFns = new Map<string, () => void>();
+  let tabApis = new Map<string, { writeLine: (t: string) => void }>();
+  let noticeQueue: string[] = [];
+
+  // ---- 偏好 ----
   let prefCopyOnSelect = $state((localStorage.getItem('prefCopyOnSelect') ?? '1') === '1');
   let prefConfirmMultiLine = $state((localStorage.getItem('prefConfirmMultiLine') ?? '1') === '1');
   let fontSize = $state(Number(localStorage.getItem('fontSize') ?? 14));
   let showSettings = $state(false);
-  let showSearch = $state(false);
-  let searchTerm = $state('');
 
-  let term: Terminal | undefined;
-  let fit: FitAddon | undefined;
-  let searchAddon: SearchAddon | undefined;
   let unlistenAll: UnlistenFn[] = [];
-  let termHost: HTMLDivElement | undefined = $state();
+
+  const activeTab = $derived(activeIdx >= 0 && activeIdx < tabs.length ? tabs[activeIdx] : null);
 
   function emptyDraft(): Profile {
     return { id: '', name: '', host: '', port: 22, username: 'root',
@@ -84,161 +80,111 @@
     } catch (e) { error = String(e); }
   }
 
-  function b64ToBytes(s: string): Uint8Array {
-    const bin = atob(s);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  function bytesToB64(b: Uint8Array): string {
-    let s = '';
-    for (const x of b) s += String.fromCharCode(x);
-    return btoa(s);
-  }
-
-  // ---- 剪贴板 ----
-  async function copySelection() {
-    const sel = term?.getSelection();
-    if (sel) await writeText(sel);
-  }
-
-  async function pasteClipboard() {
-    if (!term || !connectedId) return;
-    let text: string;
-    try { text = await readText(); } catch { return; }
-    if (!text) return;
-    if (prefConfirmMultiLine && /[\r\n]/.test(text)) {
-      const lines = text.split(/\r?\n/).filter((l, i, a) => l !== '' || i < a.length - 1).length;
-      if (!confirm(`剪贴板包含 ${lines} 行文本，确认粘贴到终端？`)) return;
-    }
-    term.paste(text);
-  }
-
-  function doReconnect() {
-    if (lastProfile) connect(lastProfile);
+  function estimateSize() {
+    const w = paneEl?.clientWidth ?? 800;
+    const h = paneEl?.clientHeight ?? 600;
+    return {
+      cols: Math.max(20, Math.floor((w - 12) / (fontSize * 0.62))),
+      rows: Math.max(6, Math.floor((h - 12) / (fontSize * 1.21))),
+    };
   }
 
   async function connect(p: Profile) {
     error = '';
-    if (connectedId) { error = '已有活动会话，请先断开'; return; }
-    const cols = term?.cols ?? 80;
-    const rows = term?.rows ?? 24;
+    const { cols, rows } = estimateSize();
     const password = p.auth_method === 'password' ? prompt('输入密码（不落盘）') : null;
     try {
-      await invoke('connect', { profileId: p.id, password, cols, rows });
-      connectedId = p.id;
-      lastProfile = p;
-      closedReason = '';
-      term?.focus();
-    } catch (e) { error = String(e); }
+      const sid = await invoke<string>('connect', { profileId: p.id, password, cols, rows });
+      tabs = [...tabs, { sid, profile: p, alive: true }];
+      activeIdx = tabs.length - 1;
+      flushNotices();
+    } catch (e) {
+      error = String(e);
+    }
   }
 
-  async function disconnect() {
-    if (!connectedId) return;
-    await invoke('disconnect', { id: connectedId });
-    connectedId = null;
+  async function closeTab(i: number) {
+    const t = tabs[i];
+    if (!t) return;
+    if (t.alive) {
+      try { await invoke('disconnect', { id: t.sid }); } catch { /* 已断开 */ }
+    }
+    fitFns.delete(t.sid);
+    tabApis.delete(t.sid);
+    tabs.splice(i, 1);
+    tabs = tabs;
+    if (activeIdx >= tabs.length) activeIdx = tabs.length - 1;
+    const nt = tabs[activeIdx];
+    if (nt) requestAnimationFrame(() => fitFns.get(nt.sid)?.());
+  }
+
+  function onTabClosed(sid: string) {
+    const t = tabs.find((x) => x.sid === sid);
+    if (t) t.alive = false;
+  }
+
+  function doReconnect() {
+    const t = activeTab;
+    if (!t) return;
+    const i = activeIdx;
+    closeTab(i);
+    connect(t.profile);
   }
 
   function setFont(size: number) {
-    fontSize = Math.min(28, Math.max(10, size));
-    if (term) {
-      term.options.fontSize = fontSize;
-      fit?.fit();
-      if (connectedId && term) invoke('resize', { id: connectedId, cols: term.cols, rows: term.rows });
-    }
+    fontSize = size === 999 ? 14 : Math.min(28, Math.max(10, size));
     localStorage.setItem('fontSize', String(fontSize));
+    const t = activeTab;
+    if (t) requestAnimationFrame(() => fitFns.get(t.sid)?.());
+  }
+
+  function onZoom(e: Event) {
+    const d = (e as CustomEvent<number>).detail;
+    setFont(d === 999 ? 999 : fontSize + d);
+  }
+
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (e.ctrlKey && e.key === 'Tab') {
+      e.preventDefault();
+      if (tabs.length > 1) {
+        activeIdx = (activeIdx + (e.shiftKey ? -1 : 1) + tabs.length) % tabs.length;
+        const t = activeTab;
+        if (t) requestAnimationFrame(() => fitFns.get(t.sid)?.());
+      }
+    } else if (e.ctrlKey && e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      if (tabs.length > 1) {
+        activeIdx = (activeIdx + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      }
+    } else if (e.ctrlKey && e.key.toLowerCase() === 'w') {
+      if (activeIdx >= 0) { e.preventDefault(); closeTab(activeIdx); }
+    }
   }
 
   onMount(async () => {
-    term = new Terminal({
-      fontFamily: 'JetBrains Mono, Sarasa Mono SC, Microsoft YaHei Mono, monospace',
-      fontSize,
-      scrollback: 10000,
-      cursorBlink: true,
-      allowProposedApi: true,
-      theme: {
-        background: '#101010', foreground: '#d4d4d4', cursor: '#7fd1b9',
-        selectionBackground: '#2d4f60',
-      },
-    });
-    fit = new FitAddon();
-    searchAddon = new SearchAddon();
-    const u11 = new Unicode11Addon();
-    term.loadAddon(fit);
-    term.loadAddon(searchAddon);
-    term.loadAddon(u11);
-    term.unicode.activeVersion = '11';
-    term.open(termHost!);
-    fit.fit();
-
-    term.onData((d) => {
-      if (connectedId) invoke('write_input', { id: connectedId, dataBase64: bytesToB64(new TextEncoder().encode(d)) });
-    });
-
-    // 选中即复制（PuTTY 风格）
-    term.onSelectionChange(() => {
-      if (prefCopyOnSelect) copySelection();
-    });
-
-    // 右键：有选区→复制，无选区→粘贴
-    termHost!.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      if (term?.hasSelection()) copySelection();
-      else pasteClipboard();
-    });
-    // Ctrl+滚轮缩放
-    termHost!.addEventListener('wheel', (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      e.preventDefault();
-      setFont(fontSize + (e.deltaY < 0 ? 1 : -1));
-    }, { passive: false });
-
-    // 快捷键：Ctrl+Shift+C/V、Ctrl+F、Ctrl+滚轮外的加减号
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== 'keydown' || !e.ctrlKey) return true;
-      const k = e.key.toLowerCase();
-      if (e.shiftKey && k === 'c') { copySelection(); return false; }
-      if (e.shiftKey && k === 'v') { pasteClipboard(); return false; }
-      if (!e.shiftKey && k === 'f') { showSearch = true; return false; }
-      if (k === '=' || k === '+') { setFont(fontSize + 1); return false; }
-      if (k === '-') { setFont(fontSize - 1); return false; }
-      if (k === '0') { setFont(14); return false; }
-      return true;
-    });
-
     window.addEventListener('resize', onWinResize);
-
-    unlistenAll.push(await listen<{ id: string; data: string }>('pty-output', (ev) => {
-      if (ev.payload.id === connectedId) term?.write(b64ToBytes(ev.payload.data));
-    }));
-    unlistenAll.push(await listen<{ id: string; reason: string }>('pty-closed', (ev) => {
-      if (ev.payload.id !== connectedId) return;
-      connectedId = null;
-      closedReason = ev.payload.reason;
-      term?.writeln('\r\n\x1b[33m' + ev.payload.reason + '\x1b[0m');
-    }));
+    window.addEventListener('lterm-zoom', onZoom);
+    window.addEventListener('keydown', onWindowKeydown);
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
-      term?.writeln(`\r\n\x1b[33m[安全] 新主机 ${ev.payload.host}:${ev.payload.port}，指纹已记录: ${ev.payload.fingerprint}\x1b[0m`);
+      noticeQueue.push(`\x1b[33m[安全] 新主机 ${ev.payload.host}:${ev.payload.port}，指纹已记录: ${ev.payload.fingerprint}\x1b[0m`);
     }));
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-mismatch', (ev) => {
       const msg = `主机密钥与记录不一致 ${ev.payload.host}:${ev.payload.port} (${ev.payload.fingerprint})，连接已拒绝`;
       error = msg;
-      term?.writeln(`\r\n\x1b[31m[安全警告] ${msg}\x1b[0m`);
     }));
-
     await refresh();
   });
 
-  function onWinResize() {
-    fit?.fit();
-    if (connectedId && term) invoke('resize', { id: connectedId, cols: term.cols, rows: term.rows });
+  function flushNotices() {
+    requestAnimationFrame(() => {
+      const t = tabs[activeIdx];
+      if (!t) return;
+      while (noticeQueue.length) tabApis.get(t.sid)?.writeLine(noticeQueue.shift()!);
+    });
   }
 
-  function closeSearch() {
-    showSearch = false;
-    searchTerm = '';
-    searchAddon?.clearDecorations();
-    term?.focus();
+  function onWinResize() {
+    const t = activeTab;
+    if (t) requestAnimationFrame(() => fitFns.get(t.sid)?.());
   }
 
   $effect(() => {
@@ -248,8 +194,9 @@
 
   onDestroy(() => {
     window.removeEventListener('resize', onWinResize);
+    window.removeEventListener('lterm-zoom', onZoom);
+    window.removeEventListener('keydown', onWindowKeydown);
     for (const u of unlistenAll) u();
-    term?.dispose();
   });
 
   const authLabel = { password: '密码', key: '密钥', agent: 'agent' } as const;
@@ -303,31 +250,57 @@
     </ul>
   </aside>
 
-  <section class="term-pane">
-    {#if error}<div class="error">{error}</div>{/if}
-    {#if showSearch}
-      <div class="findbar">
-        <input placeholder="搜索输出内容…" bind:value={searchTerm}
-               autofocus
-               onkeydown={(e) => {
-                 if (e.key === 'Enter') e.shiftKey ? searchAddon?.findNext(searchTerm) : searchAddon?.findPrevious(searchTerm);
-                 if (e.key === 'Escape') closeSearch();
-               }} />
-        <button onclick={() => searchAddon?.findPrevious(searchTerm)}>↑</button>
-        <button onclick={() => searchAddon?.findNext(searchTerm)}>↓</button>
-        <button onclick={closeSearch}>✕</button>
-      </div>
-    {/if}
-    <div class="term" bind:this={termHost}></div>
+  <section class="right">
+    <div class="tabbar">
+      {#each tabs as t, i}
+        <div class="tab" class:active={i === activeIdx} role="tab" tabindex={0} aria-selected={i === activeIdx}
+             onclick={() => { activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); }}
+             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); } }}>
+          <span class="dot" class:connected={t.alive} class:closed={!t.alive}></span>
+          {t.profile.name}
+          <button class="close" aria-label={`关闭标签 ${t.profile.name}`}
+                  onclick={(e) => { e.stopPropagation(); closeTab(i); }}>×</button>
+        </div>
+      {/each}
+      {#if tabs.length}
+        <button class="tab newtab" onclick={() => { query = ''; document.querySelector<HTMLInputElement>('.search')?.focus(); }} title="从列表选择服务器新建会话">＋</button>
+      {/if}
+    </div>
+
+    {#if error}<div class="error">{error} <button class="dismiss" onclick={() => error = ''}>✕</button></div>{/if}
+
+    <div class="panes" bind:this={paneEl}>
+      {#if tabs.length === 0}
+        <div class="welcome">
+          <h2>lterm</h2>
+          <p>左侧添加服务器，单击连接。支持 ssh-agent / 密钥 / 密码认证。</p>
+          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · Ctrl+Shift+C/V 复制/粘贴 · Ctrl+W 关闭标签 · 右键 复制/粘贴</p>
+        </div>
+      {/if}
+      {#each tabs as t, i (t.sid)}
+        <Session sessionId={t.sid}
+                 active={i === activeIdx}
+                 {fontSize}
+                 {prefCopyOnSelect}
+                 {prefConfirmMultiLine}
+                 onClosed={() => onTabClosed(t.sid)}
+                 onResize={(cols, rows) => { if (t.alive) invoke('resize', { id: t.sid, cols, rows }); }}
+                 registerFit={(fn) => fitFns.set(t.sid, fn)}
+                 registerApi={(sid, api) => tabApis.set(sid, api)} />
+      {/each}
+    </div>
+
     <div class="status">
-      {#if connectedId}
-        <span class="dot connected"></span>已连接
-        <button onclick={disconnect}>断开</button>
-      {:else if lastProfile && closedReason}
-        <span class="dot closed"></span>{closedReason}
-        <button onclick={doReconnect}>重连 {lastProfile.name}</button>
+      {#if activeTab}
+        <span class="dot" class:connected={activeTab.alive} class:closed={!activeTab.alive}></span>
+        {activeTab.alive ? activeTab.profile.username + '@' + activeTab.profile.host : '会话已结束'}
+        {#if activeTab.alive}
+          <button onclick={() => closeTab(activeIdx)}>断开</button>
+        {:else}
+          <button onclick={doReconnect}>重连 {activeTab.profile.name}</button>
+        {/if}
       {:else}
-        <span class="dot"></span>未连接
+        <span class="dot"></span>无活动会话
       {/if}
       <span class="spacer"></span>
       <button class="gear" onclick={() => showSettings = !showSettings} title="终端设置">⚙</button>
@@ -367,16 +340,25 @@
   .del { border: none; background: none; color: #666; cursor: pointer; }
   .del:hover { color: #e57373; }
   .empty { padding: 16px; color: #666; }
-  .term-pane { flex: 1; display: flex; flex-direction: column; background: #101010; position: relative; }
-  .term { flex: 1; padding: 6px; }
-  .error { padding: 6px 10px; background: #4a1d1d; color: #f0a0a0; font-size: 13px; }
-  .findbar { display: flex; gap: 4px; padding: 4px 8px; background: #222; border-bottom: 1px solid #333; }
-  .findbar input { flex: 1; padding: 4px 8px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
-  .findbar button { padding: 2px 10px; }
+  .right { flex: 1; display: flex; flex-direction: column; background: #101010; min-width: 0; }
+  .tabbar { display: flex; background: #181818; border-bottom: 1px solid #2a2a2a; overflow-x: auto; }
+  .tabbar::-webkit-scrollbar { display: none; }
+  .tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: none; border: none; border-right: 1px solid #262626; color: #999; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .tab.active { background: #101010; color: #eee; }
+  .tab .close { border: none; background: none; color: inherit; padding: 0 2px; border-radius: 3px; cursor: pointer; line-height: 1; }
+  .tab .close:hover { background: #444; color: #fff; }
+  .newtab { color: #6a9fb5; }
+  .panes { flex: 1; min-height: 0; position: relative; display: flex; }
+  .panes > :global(div:not(.welcome)) { position: absolute; inset: 0; }
+  .welcome { margin: auto; text-align: center; color: #777; }
+  .welcome h2 { color: #aaa; margin-bottom: 4px; }
+  .welcome .kbd { font-size: 12px; color: #555; }
+  .error { padding: 6px 10px; background: #4a1d1d; color: #f0a0a0; font-size: 13px; display: flex; justify-content: space-between; }
+  .dismiss { background: none; border: none; color: #f0a0a0; cursor: pointer; }
   .status { padding: 4px 10px; font-size: 12px; color: #999; border-top: 1px solid #333; display: flex; gap: 10px; align-items: center; position: relative; }
   .status button { padding: 2px 10px; }
   .spacer { flex: 1; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #555; margin-right: 2px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #555; }
   .dot.connected { background: #4caf50; }
   .dot.closed { background: #e6a23c; }
   .gear { background: none; border: none; color: #999; cursor: pointer; font-size: 14px; }

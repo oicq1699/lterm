@@ -129,7 +129,7 @@ pub async fn connect(
     password: Option<String>,
     cols: u32,
     rows: u32,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let profile: ServerProfile = store
         .lock()
         .unwrap()
@@ -139,12 +139,7 @@ pub async fn connect(
         .cloned()
         .ok_or_else(|| format!("未找到服务器 {profile_id}"))?;
 
-    {
-        let guard = registry.lock().unwrap();
-        if guard.entries.contains_key(&profile.id) {
-            return Err("该服务器已有活动会话".into());
-        }
-    }
+    let id: String = uuid::Uuid::new_v4().to_string();
 
     let handler = LtermHandler {
         app: app.clone(),
@@ -175,7 +170,6 @@ pub async fn connect(
 
     let (mut rx, tx) = channel.split();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SessionCmd>();
-    let id = profile.id.clone();
     registry.lock().unwrap().entries.insert(id.clone(), cmd_tx);
 
     let actor_id = id.clone();
@@ -233,7 +227,7 @@ pub async fn connect(
         }
     });
 
-    Ok(())
+    Ok(id)
 }
 
 #[tauri::command]
