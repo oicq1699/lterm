@@ -27,6 +27,17 @@ struct HostKeyPayload {
     fingerprint: String,
 }
 
+impl LtermHandler {
+    pub fn for_host(app: AppHandle, profile: &crate::store::ServerProfile) -> Self {
+        Self {
+            host_keys: app.state::<Arc<Mutex<HostKeys>>>().inner().clone(),
+            app,
+            host: profile.host.clone(),
+            port: profile.port,
+        }
+    }
+}
+
 impl client::Handler for LtermHandler {
     type Error = russh::Error;
 

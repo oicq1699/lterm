@@ -8,9 +8,12 @@
   import { Unicode11Addon } from '@xterm/addon-unicode11';
   import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
   import '@xterm/xterm/css/xterm.css';
+  import SftpBrowser from './SftpBrowser.svelte';
 
   type Props = {
     sessionId: string;
+    profileId: string;
+    sessionPassword: string | null;
     active: boolean;
     fontSize: number;
     prefCopyOnSelect: boolean;
@@ -21,7 +24,7 @@
     registerApi: (sid: string, api: { writeLine: (t: string) => void }) => void;
   };
   let {
-    sessionId, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
+    sessionId, profileId, sessionPassword, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
     onClosed, onResize, registerFit, registerApi,
   }: Props = $props();
 
@@ -31,6 +34,7 @@
   let unlistenAll: UnlistenFn[] = [];
   let termHost: HTMLDivElement | undefined = $state();
   let showSearch = $state(false);
+  let showSftp = $state(false);
   let searchTerm = $state('');
   let dead = $state(false);
 
@@ -155,27 +159,45 @@
   });
 </script>
 
-<div class="term-wrap" style:display={active ? 'block' : 'none'}>
-  {#if showSearch}
-    <div class="findbar">
-      <input placeholder="搜索输出内容…" bind:value={searchTerm}
-             aria-label="搜索输出内容"
-             onkeydown={(e) => {
-               if (e.key === 'Enter') e.shiftKey ? searchAddon?.findNext(searchTerm) : searchAddon?.findPrevious(searchTerm);
-               if (e.key === 'Escape') closeSearch();
-             }} />
-      <button onclick={() => searchAddon?.findPrevious(searchTerm)}>↑</button>
-      <button onclick={() => searchAddon?.findNext(searchTerm)}>↓</button>
-      <button onclick={closeSearch}>✕</button>
+<div class="term-wrap" style:display={active ? 'flex' : 'none'}>
+  <div class="term-col">
+    {#if showSearch}
+      <div class="findbar">
+        <input placeholder="搜索输出内容…" bind:value={searchTerm}
+               aria-label="搜索输出内容"
+               onkeydown={(e) => {
+                 if (e.key === 'Enter') e.shiftKey ? searchAddon?.findNext(searchTerm) : searchAddon?.findPrevious(searchTerm);
+                 if (e.key === 'Escape') closeSearch();
+               }} />
+        <button onclick={() => searchAddon?.findPrevious(searchTerm)}>↑</button>
+        <button onclick={() => searchAddon?.findNext(searchTerm)}>↓</button>
+        <button onclick={closeSearch}>✕</button>
+      </div>
+    {/if}
+    <div class="term" bind:this={termHost}></div>
+  </div>
+  {#if showSftp}
+    <div class="sftp-side">
+      <div class="sftp-head">
+        <span>SFTP 文件</span>
+        <button onclick={() => showSftp = false} aria-label="关闭文件面板">✕</button>
+      </div>
+      <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} />
     </div>
   {/if}
-  <div class="term" bind:this={termHost}></div>
+  <button class="sftp-toggle" class:open={showSftp} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
 </div>
 
 <style>
-  .term-wrap { height: 100%; display: flex; flex-direction: column; }
+  .term-wrap { height: 100%; flex: 1; min-width: 0; position: relative; }
+  .term-col { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; }
   .term { flex: 1; padding: 6px; min-height: 0; }
   .findbar { display: flex; gap: 4px; padding: 4px 8px; background: #222; border-bottom: 1px solid #333; }
   .findbar input { flex: 1; padding: 4px 8px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .findbar button { padding: 2px 10px; }
+  .sftp-side { position: absolute; right: 0; top: 0; bottom: 0; width: 580px; min-width: 420px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 20; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
+  .sftp-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
+  .sftp-head button { background: none; border: none; color: #999; cursor: pointer; }
+  .sftp-toggle { position: absolute; top: 6px; right: 8px; z-index: 21; background: #222c; border: 1px solid #333; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 2px 8px; }
+  .sftp-toggle.open { color: #101010; background: #8ab4f8; }
 </style>

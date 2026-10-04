@@ -21,6 +21,7 @@ pub fn run() {
             app.manage(Mutex::new(session::Registry::default()));
             let host_keys = hostkeys::HostKeys::load(&dir)?;
             app.manage(Arc::new(Mutex::new(host_keys)));
+            app.manage(Mutex::new(sftp::SftpRegistry::default()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -32,7 +33,18 @@ pub fn run() {
             session::write_input,
             session::resize,
             session::disconnect,
+            sftp::sftp_open,
             sftp::sftp_list,
+            sftp::sftp_canonicalize,
+            sftp::sftp_mkdir,
+            sftp::sftp_remove,
+            sftp::sftp_rename,
+            sftp::sftp_transfer,
+            sftp::sftp_cancel,
+            sftp::local_list,
+            sftp::local_remove,
+            sftp::local_rename,
+            sftp::local_home,
         ])
         .run(tauri::generate_context!())
         .expect("error while running lterm");

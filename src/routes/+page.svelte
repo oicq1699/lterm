@@ -11,7 +11,7 @@
     created_at: number; updated_at: number;
   };
   type Hit = { server: Profile; score: number };
-  type Tab = { sid: string; profile: Profile; alive: boolean };
+  type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null };
 
   let servers: Profile[] = $state([]);
   let hits: Hit[] = $state([]);
@@ -95,7 +95,7 @@
     const password = p.auth_method === 'password' ? prompt('输入密码（不落盘）') : null;
     try {
       const sid = await invoke<string>('connect', { profileId: p.id, password, cols, rows });
-      tabs = [...tabs, { sid, profile: p, alive: true }];
+      tabs = [...tabs, { sid, profile: p, alive: true, password }];
       activeIdx = tabs.length - 1;
       flushNotices();
     } catch (e) {
@@ -279,6 +279,8 @@
       {/if}
       {#each tabs as t, i (t.sid)}
         <Session sessionId={t.sid}
+                 profileId={t.profile.id}
+                 sessionPassword={t.password}
                  active={i === activeIdx}
                  {fontSize}
                  {prefCopyOnSelect}

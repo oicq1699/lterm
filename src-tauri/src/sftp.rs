@@ -1,4 +1,56 @@
-use serde::Serialize;
+use russh_sftp::client::SftpSession;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot};
+
+// ---------- 会话侧 worker ----------
+
+pub enum SftpJob {
+    List {
+        path: String,
+        reply: oneshot::Sender<Result<Vec<SftpEntry>, String>>,
+    },
+    Mkdir {
+        path: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Remove {
+        path: String,
+        recursive: bool,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Rename {
+        from: String,
+        to: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Upload {
+        local: String,
+        remote: String,
+        transfer_id: String,
+    },
+    Download {
+        remote: String,
+        local: String,
+        transfer_id: String,
+    },
+    Cancel {
+        transfer_id: String,
+    },
+    Canonicalize {
+        path: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+}
+
+#[derive(Default)]
+pub struct SftpRegistry {
+    pub entries: HashMap<String, mpsc::UnboundedSender<SftpJob>>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SftpEntry {
@@ -10,9 +62,446 @@ pub struct SftpEntry {
     pub mode: Option<u32>,
 }
 
-/// Phase 4 实现：在同一 russh 会话上开 subsystem("sftp")，用 russh-sftp client。
-#[tauri::command]
-pub async fn sftp_list(session_id: String, path: String) -> Result<Vec<SftpEntry>, String> {
-    let _ = (session_id, path);
-    Err("SFTP 将在 Phase 4 实现".into())
+#[derive(Clone, Serialize)]
+struct ProgressPayload {
+    id: String,
+    done: u64,
+    total: u64,
 }
+
+#[derive(Clone, Serialize)]
+struct DonePayload {
+    id: String,
+    ok: bool,
+    error: String,
+}
+
+const CHUNK: usize = 64 * 1024;
+
+/// 由会话侧调用：channel 已打开并完成 subsystem 请求。keepalive 保持底层 SSH 连接存活。
+pub fn spawn_worker(
+    app: AppHandle,
+    sid: String,
+    session: SftpSession,
+    keepalive: russh::client::Handle<crate::session::LtermHandler>,
+) -> mpsc::UnboundedSender<SftpJob> {
+    let sftp = Arc::new(session);
+    let (tx, mut rx) = mpsc::unbounded_channel::<SftpJob>();
+    let registry_sid = sid.clone();
+    tauri::async_runtime::spawn(async move {
+        let _keepalive = keepalive;
+        let mut transfers: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+        while let Some(job) = rx.recv().await {
+            match job {
+                SftpJob::List { path, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(remote_list(&sftp, &path).await);
+                    });
+                }
+                SftpJob::Mkdir { path, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(sftp.create_dir(&path).await.map_err(|e| e.to_string()));
+                    });
+                }
+                SftpJob::Rename { from, to, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(sftp.rename(&from, &to).await.map_err(|e| e.to_string()));
+                    });
+                }
+                SftpJob::Remove { path, recursive, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(remote_remove(&sftp, &path, recursive).await);
+                    });
+                }
+                SftpJob::Upload { local, remote, transfer_id } => {
+                    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+                    transfers.insert(transfer_id.clone(), cancel_tx);
+                    let sftp = sftp.clone();
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let (okv, msg) = match upload_one(&app, &sftp, &local, &remote, cancel_rx).await {
+                            Ok(()) => (true, String::new()),
+                            Err(e) => (false, e),
+                        };
+                        let _ = app.emit("sftp-done", DonePayload { id: transfer_id, ok: okv, error: msg });
+                    });
+                }
+                SftpJob::Download { remote, local, transfer_id } => {
+                    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+                    transfers.insert(transfer_id.clone(), cancel_tx);
+                    let sftp = sftp.clone();
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let (okv, msg) = match download_one(&app, &sftp, &remote, &local, cancel_rx).await {
+                            Ok(()) => (true, String::new()),
+                            Err(e) => (false, e),
+                        };
+                        let _ = app.emit("sftp-done", DonePayload { id: transfer_id, ok: okv, error: msg });
+                    });
+                }
+                SftpJob::Canonicalize { path, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(sftp.canonicalize(&path).await.map_err(|e| e.to_string()));
+                    });
+                }
+                SftpJob::Cancel { transfer_id } => {
+                    if let Some(tx) = transfers.remove(&transfer_id) {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+        }
+        let _ = sftp.close().await;
+        if let Ok(mut guard) = app.state::<Mutex<SftpRegistry>>().lock() {
+            guard.entries.remove(&registry_sid);
+        }
+    });
+    tx
+}
+
+pub async fn remote_list(sftp: &SftpSession, path: &str) -> Result<Vec<SftpEntry>, String> {
+    let canon = sftp.canonicalize(path).await.map_err(|e| format!("路径解析失败: {e}"))?;
+    let mut out = Vec::new();
+    let mut entries = sftp.read_dir(&canon).await.map_err(|e| format!("列目录失败: {e}"))?;
+    while let Some(e) = entries.next() {
+        let meta = e.metadata();
+        out.push(SftpEntry {
+            name: e.file_name(),
+            path: join_posix(&canon, &e.file_name()),
+            size: meta.size.unwrap_or(0),
+            is_dir: meta.is_dir(),
+            modified: meta.mtime.unwrap_or(0) as u64,
+            mode: meta.permissions.map(|p| p & 0o7777),
+        });
+    }
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(out)
+}
+
+pub async fn remote_remove(sftp: &SftpSession, path: &str, recursive: bool) -> Result<(), String> {
+    if !recursive {
+        if sftp.remove_file(path).await.is_err() {
+            sftp.remove_dir(path).await.map_err(|e| format!("删除失败: {e}"))?;
+        }
+        return Ok(());
+    }
+    const DMARK: &str = "\u{0}dir\u{0}";
+    let mut stack = vec![path.to_string()];
+    while let Some(p) = stack.pop() {
+        if let Some(dir) = p.strip_prefix(DMARK) {
+            sftp.remove_dir(dir).await.map_err(|e| format!("删除目录失败: {e}"))?;
+            continue;
+        }
+        if sftp.remove_file(&p).await.is_ok() {
+            continue;
+        }
+        let mut rd = sftp.read_dir(&p).await.map_err(|e| format!("遍历失败: {e}"))?;
+        stack.push(format!("{DMARK}{p}")); // 先压标记，子项在 LIFO 中先处理
+        while let Some(e) = rd.next() {
+            stack.push(e.path());
+        }
+    }
+    Ok(())
+}
+
+fn join_posix(base: &str, name: &str) -> String {
+    if base.ends_with('/') {
+        format!("{base}{name}")
+    } else {
+        format!("{base}/{name}")
+    }
+}
+
+pub async fn upload_core(
+    sftp: &SftpSession,
+    local: &str,
+    remote: &str,
+    mut cancel: Option<&mut oneshot::Receiver<()>>,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
+) -> Result<(), String> {
+    let mut lf = tokio::fs::File::open(local).await.map_err(|e| format!("打开本地文件失败: {e}"))?;
+    let total = lf.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let mut rf = sftp.create(remote).await.map_err(|e| format!("创建远端文件失败: {e}"))?;
+    let mut buf = vec![0u8; CHUNK];
+    let mut done: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    loop {
+        if let Some(c) = cancel.as_mut() {
+            if tokio::time::timeout(std::time::Duration::ZERO, &mut *c).await.is_ok() {
+                return Err("已取消".to_string());
+            }
+        }
+        let n = lf.read(&mut buf).await.map_err(|e| format!("本地读取失败: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        rf.write_all(&buf[..n]).await.map_err(|e| format!("远端写入失败: {e}"))?;
+        done += n as u64;
+        if last_emit.elapsed().as_millis() >= 100 {
+            last_emit = std::time::Instant::now();
+            progress(done, total);
+        }
+    }
+    rf.flush().await.map_err(|e| e.to_string())?;
+    rf.close().await.map_err(|e| e.to_string())?;
+    progress(done, total);
+    Ok(())
+}
+
+async fn upload_one(app: &AppHandle, sftp: &SftpSession, local: &str, remote: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
+    let id = remote.to_string();
+    let mut prog = |done: u64, total: u64| {
+        let _ = app.emit("sftp-progress", ProgressPayload { id: id.clone(), done, total });
+    };
+    upload_core(sftp, local, remote, Some(&mut cancel), &mut prog).await
+}
+
+pub async fn download_core(
+    sftp: &SftpSession,
+    remote: &str,
+    local: &str,
+    mut cancel: Option<&mut oneshot::Receiver<()>>,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
+) -> Result<(), String> {
+    let meta = sftp.metadata(remote).await.map_err(|e| format!("远端 stat 失败: {e}"))?;
+    let total = meta.size.unwrap_or(0);
+    let mut rf = sftp.open(remote).await.map_err(|e| format!("打开远端文件失败: {e}"))?;
+    let parent = Path::new(local).parent().map(PathBuf::from);
+    if let Some(p) = parent {
+        let _ = tokio::fs::create_dir_all(p).await;
+    }
+    let mut lf = tokio::fs::File::create(local).await.map_err(|e| format!("创建本地文件失败: {e}"))?;
+    let mut buf = vec![0u8; CHUNK];
+    let mut done: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    loop {
+        if let Some(c) = cancel.as_mut() {
+            if tokio::time::timeout(std::time::Duration::ZERO, &mut *c).await.is_ok() {
+                return Err("已取消".to_string());
+            }
+        }
+        let n = rf.read(&mut buf).await.map_err(|e| format!("远端读取失败: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        lf.write_all(&buf[..n]).await.map_err(|e| format!("本地写入失败: {e}"))?;
+        done += n as u64;
+        if last_emit.elapsed().as_millis() >= 100 {
+            last_emit = std::time::Instant::now();
+            progress(done, total);
+        }
+    }
+    lf.flush().await.map_err(|e| e.to_string())?;
+    progress(done, total);
+    Ok(())
+}
+
+async fn download_one(app: &AppHandle, sftp: &SftpSession, remote: &str, local: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
+    let id = local.to_string();
+    let mut prog = |done: u64, total: u64| {
+        let _ = app.emit("sftp-progress", ProgressPayload { id: id.clone(), done, total });
+    };
+    download_core(sftp, remote, local, Some(&mut cancel), &mut prog).await
+}
+
+// ---------- Tauri 命令 ----------
+
+fn job_tx(registry: &State<Mutex<SftpRegistry>>, sid: &str) -> Result<mpsc::UnboundedSender<SftpJob>, String> {
+    let guard = registry.lock().unwrap();
+    guard.entries.get(sid).cloned().ok_or("该会话未打开 SFTP".to_string())
+}
+
+/// 在独立 SSH 连接上建立 SFTP：与终端会话共用 sid，互不干扰。
+#[tauri::command]
+pub fn local_remove(path: String, recursive: bool) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if p.is_dir() {
+        if recursive {
+            std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_dir(&p).map_err(|e| e.to_string())?;
+        }
+    } else {
+        std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn local_rename(from: String, to: String) -> Result<(), String> {
+    std::fs::rename(&from, &to).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_open(
+    app: AppHandle,
+    registry: State<'_, Mutex<SftpRegistry>>,
+    store: State<'_, Mutex<crate::store::ServerStore>>,
+    sid: String,
+    profile_id: String,
+    password: Option<String>,
+) -> Result<(), String> {
+    {
+        let guard = registry.lock().unwrap();
+        if guard.entries.contains_key(&sid) {
+            return Ok(()); // 已打开
+        }
+    }
+    let profile = store
+        .lock()
+        .unwrap()
+        .servers
+        .iter()
+        .find(|s| s.id == profile_id)
+        .cloned()
+        .ok_or_else(|| format!("未找到服务器 {profile_id}"))?;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(
+        config,
+        (profile.host.as_str(), profile.port),
+        crate::session::LtermHandler::for_host(app.clone(), &profile),
+    )
+    .await
+    .map_err(|e| format!("SFTP 连接失败: {e}"))?;
+
+    crate::auth::authenticate(&mut handle, &profile, password).await?;
+
+    let channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| e.to_string())?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("SFTP 子系统不可用: {e}"))?;
+
+    let session = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("SFTP 初始化失败: {e}"))?;
+
+    let worker_tx = spawn_worker(app, sid.clone(), session, handle);
+    registry.lock().unwrap().entries.insert(sid, worker_tx);
+    Ok(())
+}
+
+#[derive(Clone, Serialize)]
+pub struct LocalEntry {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub modified: u64,
+}
+
+#[tauri::command]
+pub fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
+    let dir = PathBuf::from(&path);
+    let rd = std::fs::read_dir(&dir).map_err(|e| format!("读取本地目录失败: {e}"))?;
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let md = e.metadata().ok();
+        out.push(LocalEntry {
+            name: e.file_name().to_string_lossy().into_owned(),
+            path: e.path().to_string_lossy().into_owned(),
+            size: md.as_ref().map(|m| m.len()).unwrap_or(0),
+            is_dir: md.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+            modified: md.as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
+    }
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn local_home() -> String {
+    dirs_home().unwrap_or_else(|| "/".to_string())
+}
+
+fn dirs_home() -> Option<String> {
+    std::env::var("HOME").ok().or_else(|| std::env::var("USERPROFILE").ok())
+}
+
+#[tauri::command]
+pub async fn sftp_list(
+    registry: State<'_, Mutex<SftpRegistry>>,
+    sid: String,
+    path: String,
+) -> Result<Vec<SftpEntry>, String> {
+    let tx = job_tx(&registry, &sid)?;
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tx.send(SftpJob::List { path, reply: reply_tx }).map_err(|_| "SFTP worker 已退出".to_string())?;
+    reply_rx.await.map_err(|_| "SFTP 响应丢失".to_string())?
+}
+
+#[tauri::command]
+pub async fn sftp_canonicalize(
+    registry: State<'_, Mutex<SftpRegistry>>,
+    sid: String,
+    path: String,
+) -> Result<String, String> {
+    let tx = job_tx(&registry, &sid)?;
+    let (r, rx) = oneshot::channel();
+    tx.send(SftpJob::Canonicalize { path, reply: r }).map_err(|_| "worker 已退出".to_string())?;
+    rx.await.map_err(|_| "响应丢失".to_string())?
+}
+
+#[tauri::command]
+pub async fn sftp_mkdir(registry: State<'_, Mutex<SftpRegistry>>, sid: String, path: String) -> Result<(), String> {
+    let tx = job_tx(&registry, &sid)?;
+    let (r, rx) = oneshot::channel();
+    tx.send(SftpJob::Mkdir { path, reply: r }).map_err(|_| "worker 已退出".to_string())?;
+    rx.await.map_err(|_| "响应丢失".to_string())?
+}
+
+#[tauri::command]
+pub async fn sftp_remove(registry: State<'_, Mutex<SftpRegistry>>, sid: String, path: String, recursive: bool) -> Result<(), String> {
+    let tx = job_tx(&registry, &sid)?;
+    let (r, rx) = oneshot::channel();
+    tx.send(SftpJob::Remove { path, recursive, reply: r }).map_err(|_| "worker 已退出".to_string())?;
+    rx.await.map_err(|_| "响应丢失".to_string())?
+}
+
+#[tauri::command]
+pub async fn sftp_rename(registry: State<'_, Mutex<SftpRegistry>>, sid: String, from: String, to: String) -> Result<(), String> {
+    let tx = job_tx(&registry, &sid)?;
+    let (r, rx) = oneshot::channel();
+    tx.send(SftpJob::Rename { from, to, reply: r }).map_err(|_| "worker 已退出".to_string())?;
+    rx.await.map_err(|_| "响应丢失".to_string())?
+}
+
+#[derive(Deserialize)]
+pub struct TransferReq {
+    pub sid: String,
+    pub transfer_id: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// from→to 均为绝对路径；方向由 worker 内 local/remote 语义决定（download:true 表示远端→本地）
+#[tauri::command]
+pub fn sftp_transfer(registry: State<'_, Mutex<SftpRegistry>>, req: TransferReq, download: bool) -> Result<(), String> {
+    let tx = job_tx(&registry, &req.sid)?;
+    let job = if download {
+        SftpJob::Download { remote: req.from, local: req.to, transfer_id: req.transfer_id }
+    } else {
+        SftpJob::Upload { local: req.from, remote: req.to, transfer_id: req.transfer_id }
+    };
+    tx.send(job).map_err(|_| "worker 已退出".to_string())
+}
+
+#[tauri::command]
+pub fn sftp_cancel(registry: State<'_, Mutex<SftpRegistry>>, sid: String, transfer_id: String) -> Result<(), String> {
+    let tx = job_tx(&registry, &sid)?;
+    tx.send(SftpJob::Cancel { transfer_id }).map_err(|_| "worker 已退出".to_string())
+}
+

@@ -26,6 +26,8 @@ mkdir -p /home/$USER/.ssh
 cp "$KEY_DIR/id_ed25519.pub" /home/$USER/.ssh/authorized_keys
 chown -R $USER:$USER /home/$USER/.ssh
 chmod 700 /home/$USER/.ssh; chmod 600 /home/$USER/.ssh/authorized_keys
+# 容器自带 sshd（端口 22）能正常 fork，真实 SFTP 端到端测试（LTERM_REAL_SSHD=1）走它
+if ss -tln | grep -q ':22 '; then echo "port-22 sshd available for LTERM_REAL_SSHD=1 tests (user=$USER)"; fi
 
 cat > "$SSHD_DIR/sshd_config" <<EOF
 Port $PORT
