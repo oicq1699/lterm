@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /root/workspace/lterm && cargo --version 2>/dev/null; rustc --version 2>/dev/null; node --version 2>/dev/null)"
+    ]
+  }
+}
