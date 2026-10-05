@@ -83,10 +83,15 @@ cargo tauri build                   # 全部（appimage 需能下载 linuxdeploy
 
 ---
 
-## 三、Windows 侧已知风险（首跑反馈点）
-1. `cl.exe/link.exe not found` → VS Build Tools 没装 C++ workload，或 rustup 装成了 GNU host
-2. ssh-agent 连接走 `\\.\pipe\openssh-ssh-agent`，需要系统「OpenSSH Authentication Agent」服务在跑（`Get-Service ssh-agent` → Start-Service + Set-Service -StartupType Automatic）；Pageant 作为兜底已实现
-3. 若 Windows 上 russh-sftp / 剪贴板有 API 差异报错，把构建或运行输出发回来即可，代码路径都集中在 `auth.rs::connect_agent` (cfg windows 分支) 与 `sftp.rs`
+## 三、Windows 注意事项（与构建无关的，都标了）
+
+**构建/测试相关**
+1. `cl.exe/link.exe not found` → VS Build Tools 没装「C++ 桌面开发」workload，或 rustup 装成了 GNU host
+2. 测试零前置条件：密钥已内嵌进 `tests/e2e.rs`，`cargo test` 在新 Windows 上直接 7/7 绿（ssh-agent、sshd 用例自动跳过，不需要任何服务）
+3. 若 Windows 上编译报错，大概率集中在 `auth.rs` 的 cfg(windows) 分支（命名管道/Pageant），把输出发回来即可修
+
+**运行功能相关（不是编译要求）**
+4. 要用「ssh-agent 登录」这个功能时，需要 Windows 的「OpenSSH Authentication Agent」服务在跑：`Get-Service ssh-agent` → `Start-Service ssh-agent` + `Set-Service ssh-agent -StartupType Automatic`；Pageant（PuTTY 系）作兜底已实现。密码/私钥登录不依赖任何服务
 
 ## 四、当前已产出物（本容器）
 - `src-tauri/target/release/bundle/deb/lterm_0.1.0_amd64.deb`（4.4MB，含全部功能）

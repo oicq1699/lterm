@@ -1,12 +1,13 @@
-//! 端到端测试：进程内 russh 测试服务器 + 本机 ssh-agent，验证客户端认证与 PTY 流程。
-//! 先运行 `./scripts/setup_test_sshd.sh`（生成密钥并拉起 agent）。
+//! 端到端测试：进程内 russh 测试服务器 + 内嵌一次性测试密钥。
+//! 零外部依赖：任何平台 `cargo test` 直接可跑（agent 用例需本机 ssh-agent，无则自动跳过）。
+//! 内嵌密钥为 throwaway 测试向量，不代表任何真实凭据。
 
 use lterm_lib::auth;
 use lterm_lib::hostkeys::{HostKeys, KeyStatus};
 use lterm_lib::store::{AuthMethod, ServerProfile};
 use russh::client;
 use russh::keys::{
-    agent::client::AgentClient, load_secret_key, PublicKey, PublicKeyOrCertificate,
+    agent::client::AgentClient, load_secret_key, PrivateKey, PublicKey, PublicKeyOrCertificate,
 };
 use russh::server::{self, Msg, Server as _, Session as ServerSession};
 use russh::{ChannelId, ChannelMsg, Disconnect, Pty};
@@ -17,8 +18,38 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex as TokioMutex;
 
-fn key_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../scripts/testkeys/{name}"))
+const KEY_A: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDOIRVv/NNfGvL03lyCXdldejkeanit8xOGm4oI36gfbgAAAIi/hutCv4br
+QgAAAAtzc2gtZWQyNTUxOQAAACDOIRVv/NNfGvL03lyCXdldejkeanit8xOGm4oI36gfbg
+AAAECDVGdNW+Bg0hTKNvFUT5MGff/x/tQ3aKD/UA0UOKhilc4hFW/8018a8vTeXIJd2V16
+OR5qeK3zE4abigjfqB9uAAAABWUyZS1h
+-----END OPENSSH PRIVATE KEY-----";
+
+const KEY_B: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDnL7bs37UfIhHwEx6zYTSZIX6dHVHZCAth/KlSNbx9xwAAAIi9Q9C6vUPQ
+ugAAAAtzc2gtZWQyNTUxOQAAACDnL7bs37UfIhHwEx6zYTSZIX6dHVHZCAth/KlSNbx9xw
+AAAEDeCOkxPTQQO4BX3XIWG0EpEyOq1hGH3DMwllOvoCUO1OcvtuzftR8iEfATHrNhNJkh
+fp0dUdkIC2H8qVI1vH3HAAAABWUyZS1i
+-----END OPENSSH PRIVATE KEY-----";
+
+fn key_a() -> PrivateKey {
+    PrivateKey::from_openssh(KEY_A).expect("内嵌测试密钥 A")
+}
+fn key_b() -> PrivateKey {
+    PrivateKey::from_openssh(KEY_B).expect("内嵌测试密钥 B")
+}
+
+/// 把内嵌密钥落成临时文件（模拟用户 key_path 场景）
+fn key_a_file(tag: &str) -> PathBuf {
+    let p = std::env::temp_dir().join(format!(
+        "lterm-e2e-keya-{}-{}.key",
+        std::process::id(),
+        tag
+    ));
+    std::fs::write(&p, KEY_A).expect("写临时密钥文件");
+    p
 }
 
 // ---------- 测试服务器：密码 pass123；公钥限定 id_ed25519；echo shell ----------
@@ -141,9 +172,8 @@ impl server::Handler for TestServer {
 }
 
 async fn start_test_server() -> (u16, PublicKey, tokio::task::JoinHandle<()>) {
-    let host_key = load_secret_key(key_path("id_ed25519"), None)
-        .expect("先运行 scripts/setup_test_sshd.sh 生成测试密钥");
-    let authorized = host_key.public_key().clone();
+    let host_key = key_b();
+    let authorized = key_a().public_key().clone();
 
     let config = Arc::new(server::Config {
         auth_rejection_time: Duration::from_millis(10),
@@ -232,32 +262,43 @@ async fn password_auth_ok_and_wrong_rejected() {
 #[tokio::test]
 async fn key_auth_ok() {
     let (port, _a, task) = start_test_server().await;
+    let file = key_a_file("keyauth");
     let handle = connect_and_auth(
         port,
         AuthMethod::Key,
         None,
-        Some(key_path("id_ed25519").to_string_lossy().into_owned()),
+        Some(file.to_string_lossy().into_owned()),
     )
     .await
     .expect("密钥认证应通过");
     close(handle).await;
+    std::fs::remove_file(&file).ok();
     task.abort();
 }
 
 #[tokio::test]
 async fn agent_auth_ok() {
-    if std::env::var("SSH_AUTH_SOCK").is_err() {
-        eprintln!("SSH_AUTH_SOCK 未设置，跳过 agent 测试");
+    let Ok(sock) = std::env::var("SSH_AUTH_SOCK") else {
+        eprintln!("无 SSH_AUTH_SOCK（Windows 或未起 agent），跳过 agent 测试");
         return;
-    }
+    };
+    let _ = sock;
     let (port, authorized, task) = start_test_server().await;
 
-    let mut agent = AgentClient::connect_env().await.expect("连接 ssh-agent");
+    let mut agent = match AgentClient::connect_env().await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("连接 ssh-agent 失败，跳过: {e}");
+            task.abort();
+            return;
+        }
+    };
     let ids = agent.request_identities().await.expect("枚举 agent 密钥");
-    assert!(
-        ids.iter().any(|i| i.public_key().key_data() == authorized.key_data()),
-        "ssh-agent 应已加载测试密钥（setup 脚本负责 ssh-add）"
-    );
+    if !ids.iter().any(|i| i.public_key().key_data() == authorized.key_data()) {
+        eprintln!("agent 中无测试密钥（先跑 scripts/setup_test_sshd.sh），跳过");
+        task.abort();
+        return;
+    }
 
     let handle = connect_and_auth(port, AuthMethod::Agent, None, None)
         .await
@@ -328,8 +369,8 @@ async fn resize_is_accepted() {
 fn hostkeys_tofu_and_mismatch() {
     let dir = std::env::temp_dir().join(format!("lterm-hostkeys-test-{}", std::process::id()));
     let mut hk = HostKeys::load(&dir).unwrap();
-    let kp = load_secret_key(key_path("id_ed25519"), None).unwrap();
-    let key = kp.public_key();
+    let ka = key_a();
+    let key = ka.public_key().clone();
 
     assert_eq!(hk.check("127.0.0.1", 2222, &key), KeyStatus::Unknown);
     let fp = hk.record("127.0.0.1", 2222, &key).unwrap();
@@ -340,8 +381,17 @@ fn hostkeys_tofu_and_mismatch() {
     assert_eq!(hk2.check("127.0.0.1", 2222, &key), KeyStatus::Trusted);
     assert_eq!(hk2.check("10.0.0.9", 22, &key), KeyStatus::Unknown);
 
-    let op = load_secret_key(key_path("id_other"), None).expect("setup 脚本应生成 id_other");
-    let other = op.public_key();
+    let kb = key_b();
+    let other = kb.public_key().clone();
     assert_eq!(hk2.check("127.0.0.1", 2222, &other), KeyStatus::Mismatch);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn embedded_keys_parse() {
+    // 保底：内嵌密钥可被 load_secret_key 文件路径读取（key_path 认证依赖此行为）
+    let f = key_a_file("parse");
+    let k = load_secret_key(&f, None).expect("文件方式加载内嵌密钥");
+    assert_eq!(k.public_key().key_data(), key_a().public_key().key_data());
+    std::fs::remove_file(&f).ok();
 }
