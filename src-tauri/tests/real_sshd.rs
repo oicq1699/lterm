@@ -3,7 +3,7 @@
 //! 本仓库配置：scripts/setup_test_sshd.sh 会把测试公钥写入 tester 用户 authorized_keys（端口 22 或 LTERM_REAL_SSHD_PORT）。
 
 use lterm_lib::auth;
-use lterm_lib::sftp::{download_core, remote_list, remote_remove, upload_core};
+use lterm_lib::sftp::{download_core, download_tree, remote_list, remote_remove, upload_core, upload_tree};
 use lterm_lib::store::{AuthMethod, ServerProfile};
 use russh::client;
 use russh::keys::PublicKeyOrCertificate;
@@ -144,6 +144,77 @@ async fn real_sftp_transfer_cancel() {
     assert_eq!(r.err().as_deref(), Some("已取消"));
     let _ = remote_remove(&sftp, &remote_file, false).await;
     tokio::fs::remove_file(&tmp).await.ok();
+}
+
+#[tokio::test]
+async fn real_sftp_tree_transfer() {
+    if enabled().is_none() {
+        return;
+    }
+    let mut handle = connect_real().await;
+    let sftp = open_sftp(&mut handle).await;
+
+    // 本地构造目录树: root/a.txt, root/sub/b.bin, root/sub/deep/c.txt
+    let stamp = std::process::id();
+    let root = std::env::temp_dir().join(format!("lterm-tree-{stamp}"));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("sub/deep")).unwrap();
+    let files: Vec<(&str, Vec<u8>)> = vec![
+        ("a.txt", b"alpha".to_vec()),
+        ("sub/b.bin", (0..4096u32).map(|i| i as u8).collect()),
+        ("sub/deep/c.txt", b"deep-content".to_vec()),
+    ];
+    for (rel, data) in &files {
+        let p = root.join(rel);
+        tokio::fs::write(&p, data).await.unwrap();
+    }
+
+    let home = sftp.canonicalize(".").await.unwrap();
+    let dest = format!("{home}/lterm_tree_test");
+    let _ = remote_remove(&sftp, &dest, true).await;
+
+    // 递归上传
+    let mut last = (0u64, 0u64);
+    upload_tree(&sftp, &root.to_string_lossy(), &dest, None, &mut |d, t| last = (d, t))
+        .await
+        .unwrap();
+    let total: u64 = files.iter().map(|f| f.1.len() as u64).sum();
+    assert_eq!(last, (total, total), "进度应为累计字节");
+
+    // 远端逐层校验
+    let entries = remote_list(&sftp, &dest).await.unwrap();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"a.txt") && names.contains(&"sub"), "远端应有 a.txt 与 sub");
+    let mut rd = sftp.read_dir(format!("{dest}/sub/deep")).await.unwrap();
+    let deep_names: Vec<String> = rd.by_ref().map(|e| e.file_name()).collect();
+    assert_eq!(deep_names, vec!["c.txt".to_string()]);
+    let mut rf = sftp.open(format!("{dest}/sub/b.bin")).await.unwrap();
+    use tokio::io::AsyncReadExt;
+    let mut got = Vec::new();
+    rf.read_to_end(&mut got).await.unwrap();
+    assert_eq!(got, files[1].1);
+
+    // 递归下载回来比对
+    let back = std::env::temp_dir().join(format!("lterm-tree-back-{stamp}"));
+    let _ = std::fs::remove_dir_all(&back);
+    download_tree(&sftp, &dest, &back.to_string_lossy(), None, &mut |_, _| {})
+        .await
+        .unwrap();
+    for (rel, data) in &files {
+        assert_eq!(tokio::fs::read(back.join(rel)).await.unwrap(), *data, "{rel} 内容不一致");
+    }
+
+    // 取消整个目录传输
+    let (tx, rx) = oneshot::channel::<()>();
+    let _ = tx.send(());
+    let dest2 = format!("{home}/lterm_tree_cancel");
+    let r = upload_tree(&sftp, &root.to_string_lossy(), &dest2, Some(&mut { rx }), &mut |_, _| {}).await;
+    assert_eq!(r.err().as_deref(), Some("已取消"));
+
+    let _ = remote_remove(&sftp, &dest, true).await;
+    let _ = remote_remove(&sftp, &dest2, true).await;
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&back).ok();
 }
 
 #[tokio::test]

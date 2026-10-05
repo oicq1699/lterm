@@ -1,4 +1,6 @@
 pub mod auth;
+pub mod dirstate;
+pub mod fonts;
 pub mod fuzzy;
 pub mod hostkeys;
 pub mod session;
@@ -54,6 +56,7 @@ pub fn run() {
             let host_keys = hostkeys::HostKeys::load(&dir)?;
             app.manage(Arc::new(Mutex::new(host_keys)));
             app.manage(Mutex::new(sftp::SftpRegistry::default()));
+            app.manage(Mutex::new(dirstate::DirState::load(&dir)?));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -61,6 +64,7 @@ pub fn run() {
             store::upsert_server,
             store::delete_server,
             fuzzy::search_servers,
+            fonts::list_fonts,
             session::connect,
             session::write_input,
             session::resize,
@@ -77,6 +81,8 @@ pub fn run() {
             sftp::local_remove,
             sftp::local_rename,
             sftp::local_home,
+            dirstate::get_dir_state,
+            dirstate::set_dir_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running lterm");

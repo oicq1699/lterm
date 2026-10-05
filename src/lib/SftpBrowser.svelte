@@ -53,33 +53,50 @@
     ready = true;
   }
 
-  async function loadLocal(path?: string) {
+  function saveState() {
+    invoke('set_dir_state', { profileId, local: localPath || null, remote: remotePath || null }).catch(() => {});
+  }
+
+  async function loadLocal(path?: string, quiet = false): Promise<boolean> {
     const p = path ?? localPath;
     try {
       const r = await invoke<{ name: string; path: string; size: number; is_dir: boolean; modified: number }[]>('local_list', { path: p });
       localPath = p;
       localEntries = r as Entry[];
       localSel = new Set();
-    } catch (e) { error = String(e); }
+      saveState();
+      return true;
+    } catch (e) { if (!quiet) error = String(e); return false; }
   }
 
-  async function loadRemote(path?: string) {
+  async function loadRemote(path?: string, quiet = false): Promise<boolean> {
     const p = path ?? remotePath;
     try {
       const r = await invoke<Entry[]>('sftp_list', { sid, path: p });
       remotePath = p;
       remoteEntries = r;
       remoteSel = new Set();
-    } catch (e) { error = String(e); }
+      saveState();
+      return true;
+    } catch (e) { if (!quiet) error = String(e); return false; }
   }
 
   async function init() {
     error = '';
     try {
       await ensureOpen();
-      localPath = await invoke<string>('local_home');
-      await Promise.all([loadLocal(), loadRemote('.')]);
-      remotePath = await invoke<string>('sftp_canonicalize', { sid, path: remotePath });
+      const st = await invoke<{ local: string | null; remote: string | null }>('get_dir_state', { profileId });
+      if (!(st.local && await loadLocal(st.local, true))) {
+        await loadLocal(await invoke<string>('local_home'));
+      }
+      let startOk = false;
+      if (st.remote) startOk = await loadRemote(st.remote, true);
+      if (!startOk) {
+        startOk = await loadRemote('.', true);
+        if (startOk) {
+          try { remotePath = await invoke<string>('sftp_canonicalize', { sid, path: remotePath }); } catch { /* 保留原路径 */ }
+        }
+      }
     } catch (e) { error = String(e); }
   }
   init();
@@ -126,7 +143,7 @@
     try { await ensureOpen(); } catch (e) { error = String(e); return; }
     for (const p of localSel) {
       const en = localEntries.find((x) => x.path === p);
-      if (!en || en.is_dir) { error = '暂不支持上传目录（可选中多个文件）'; continue; }
+      if (!en) continue;
       const target = joinPosix(remotePath, en.name);
       newTransfer(target, 'up');
       invoke('sftp_transfer', { req: { sid, transfer_id: target, from: en.path, to: target }, download: false })
@@ -139,7 +156,7 @@
     try { await ensureOpen(); } catch (e) { error = String(e); return; }
     for (const p of remoteSel) {
       const en = remoteEntries.find((x) => x.path === p);
-      if (!en || en.is_dir) { error = '暂不支持下载目录'; continue; }
+      if (!en) continue;
       const target = joinLocal(localPath, en.name);
       newTransfer(target, 'down');
       invoke('sftp_transfer', { req: { sid, transfer_id: target, from: en.path, to: target }, download: true })

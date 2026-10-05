@@ -217,6 +217,79 @@ fn join_posix(base: &str, name: &str) -> String {
     }
 }
 
+async fn remote_mkdir_p(sftp: &SftpSession, path: &str) -> Result<(), String> {
+    let absolute = path.starts_with('/');
+    let mut acc = String::new();
+    let mut parts = Vec::new();
+    for seg in path.split('/').filter(|s| !s.is_empty() && *s != ".") {
+        acc = if acc.is_empty() {
+            if absolute { format!("/{seg}") } else { seg.to_string() }
+        } else {
+            format!("{acc}/{seg}")
+        };
+        parts.push(acc.clone());
+    }
+    for p in parts {
+        if p == "/" {
+            continue;
+        }
+        if sftp.create_dir(&p).await.is_err() && sftp.metadata(&p).await.is_err() {
+            return Err(format!("创建远端目录失败: {p}"));
+        }
+    }
+    Ok(())
+}
+
+fn collect_local_tree(root: &Path, prefix: &str, out: &mut Vec<(PathBuf, String, u64)>) -> Result<(), String> {
+    let rd = std::fs::read_dir(root).map_err(|e| format!("读取本地目录失败: {e}"))?;
+    for e in rd.flatten() {
+        let ft = match e.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let name = e.file_name().to_string_lossy().into_owned();
+        let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+        if ft.is_dir() {
+            collect_local_tree(&e.path(), &rel, out)?;
+        } else if ft.is_file() {
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            out.push((e.path(), rel, size));
+        }
+    }
+    Ok(())
+}
+
+fn collect_remote(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") }
+}
+
+fn collect_remote_tree<'a>(
+    sftp: &'a SftpSession,
+    root: String,
+    prefix: String,
+    out: &'a mut Vec<(String, String, u64)>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut rd = sftp.read_dir(&root).await.map_err(|e| format!("遍历远端目录失败: {e}"))?;
+        while let Some(e) = rd.next() {
+            let name = e.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let rel = collect_remote(&prefix, &name);
+            let full = join_posix(&root, &name);
+            let md = e.metadata();
+            if md.is_dir() {
+                collect_remote_tree(sftp, full, rel, out).await?;
+            } else {
+                let size = md.size.unwrap_or(0);
+                out.push((full, rel, size));
+            }
+        }
+        Ok(())
+    })
+}
+
 pub async fn upload_core(
     sftp: &SftpSession,
     local: &str,
@@ -253,12 +326,95 @@ pub async fn upload_core(
     Ok(())
 }
 
+pub async fn upload_tree(
+    sftp: &SftpSession,
+    local: &str,
+    remote_dest: &str,
+    mut cancel: Option<&mut oneshot::Receiver<()>>,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
+) -> Result<(), String> {
+    let mut tree: Vec<(PathBuf, String, u64)> = Vec::new();
+    collect_local_tree(Path::new(local), "", &mut tree)?;
+    let total: u64 = tree.iter().map(|f| f.2).sum();
+    remote_mkdir_p(sftp, remote_dest).await?;
+    let mut base_done: u64 = 0;
+    for (lp, rel, size) in tree {
+        if let Some(c) = cancel.as_mut() {
+            if tokio::time::timeout(std::time::Duration::ZERO, &mut *c).await.is_ok() {
+                return Err("已取消".to_string());
+            }
+        }
+        if let Some(pos) = rel.rfind('/') {
+            remote_mkdir_p(sftp, &join_posix(remote_dest, &rel[..pos])).await?;
+        }
+        let lp = lp.to_string_lossy().into_owned();
+        let rf = join_posix(remote_dest, &rel);
+        let b = base_done;
+        let mut prog = |d: u64, _t: u64| progress(b + d, total);
+        match cancel.as_mut() {
+            Some(c) => upload_core(sftp, &lp, &rf, Some(&mut *c), &mut prog).await,
+            None => upload_core(sftp, &lp, &rf, None, &mut prog).await,
+        }
+        .map_err(|e| if e == "已取消" { e } else { format!("{rel}: {e}") })?;
+        base_done += size;
+    }
+    progress(base_done, total);
+    Ok(())
+}
+
+pub async fn download_tree(
+    sftp: &SftpSession,
+    remote: &str,
+    local_dest: &str,
+    mut cancel: Option<&mut oneshot::Receiver<()>>,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
+) -> Result<(), String> {
+    let mut tree: Vec<(String, String, u64)> = Vec::new();
+    collect_remote_tree(sftp, remote.to_string(), String::new(), &mut tree).await?;
+    let total: u64 = tree.iter().map(|f| f.2).sum();
+    tokio::fs::create_dir_all(local_dest).await.map_err(|e| format!("创建本地目录失败: {e}"))?;
+    let mut base_done: u64 = 0;
+    for (rp, rel, size) in tree {
+        if rel.split('/').any(|c| c == "..") {
+            continue; // 防目录穿越
+        }
+        if let Some(c) = cancel.as_mut() {
+            if tokio::time::timeout(std::time::Duration::ZERO, &mut *c).await.is_ok() {
+                return Err("已取消".to_string());
+            }
+        }
+        let mut lp = PathBuf::from(local_dest);
+        for c in rel.split('/') {
+            lp.push(c);
+        }
+        if let Some(parent) = lp.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let lps = lp.to_string_lossy().into_owned();
+        let b = base_done;
+        let mut prog = |d: u64, _t: u64| progress(b + d, total);
+        match cancel.as_mut() {
+            Some(c) => download_core(sftp, &rp, &lps, Some(&mut *c), &mut prog).await,
+            None => download_core(sftp, &rp, &lps, None, &mut prog).await,
+        }
+        .map_err(|e| if e == "已取消" { e } else { format!("{rel}: {e}") })?;
+        base_done += size;
+    }
+    progress(base_done, total);
+    Ok(())
+}
+
 async fn upload_one(app: &AppHandle, sftp: &SftpSession, local: &str, remote: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
     let id = remote.to_string();
+    let is_dir = tokio::fs::metadata(local).await.map(|m| m.is_dir()).unwrap_or(false);
     let mut prog = |done: u64, total: u64| {
         let _ = app.emit("sftp-progress", ProgressPayload { id: id.clone(), done, total });
     };
-    upload_core(sftp, local, remote, Some(&mut cancel), &mut prog).await
+    if is_dir {
+        upload_tree(sftp, local, remote, Some(&mut cancel), &mut prog).await
+    } else {
+        upload_core(sftp, local, remote, Some(&mut cancel), &mut prog).await
+    }
 }
 
 pub async fn download_core(
@@ -303,10 +459,15 @@ pub async fn download_core(
 
 async fn download_one(app: &AppHandle, sftp: &SftpSession, remote: &str, local: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
     let id = local.to_string();
+    let meta = sftp.metadata(remote).await.map_err(|e| format!("远端 stat 失败: {e}"))?;
     let mut prog = |done: u64, total: u64| {
         let _ = app.emit("sftp-progress", ProgressPayload { id: id.clone(), done, total });
     };
-    download_core(sftp, remote, local, Some(&mut cancel), &mut prog).await
+    if meta.is_dir() {
+        download_tree(sftp, remote, local, Some(&mut cancel), &mut prog).await
+    } else {
+        download_core(sftp, remote, local, Some(&mut cancel), &mut prog).await
+    }
 }
 
 // ---------- Tauri 命令 ----------

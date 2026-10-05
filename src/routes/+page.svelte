@@ -31,7 +31,10 @@
   let prefCopyOnSelect = $state((localStorage.getItem('prefCopyOnSelect') ?? '1') === '1');
   let prefConfirmMultiLine = $state((localStorage.getItem('prefConfirmMultiLine') ?? '1') === '1');
   let fontSize = $state(Number(localStorage.getItem('fontSize') ?? 14));
+  let fontFamily = $state(localStorage.getItem('fontFamily') ?? '');
+  let fontList = $state<string[] | null>(null);
   let showSettings = $state(false);
+  let showAside = $state(localStorage.getItem('asideHidden') !== '1');
 
   let unlistenAll: UnlistenFn[] = [];
 
@@ -155,6 +158,10 @@
       if (tabs.length > 1) {
         activeIdx = (activeIdx + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
       }
+    } else if (e.ctrlKey && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      showAside = !showAside;
+      localStorage.setItem('asideHidden', showAside ? '0' : '1');
     } else if (e.ctrlKey && e.key.toLowerCase() === 'w') {
       if (activeIdx >= 0) { e.preventDefault(); closeTab(activeIdx); }
     }
@@ -199,14 +206,30 @@
     for (const u of unlistenAll) u();
   });
 
+  async function openSettings() {
+    showSettings = !showSettings;
+    if (showSettings && !fontList) {
+      try { fontList = await invoke<string[]>('list_fonts'); } catch { fontList = []; }
+    }
+  }
+
+  function setFontFamily(v: string) {
+    fontFamily = v;
+    localStorage.setItem('fontFamily', v);
+  }
+
   const authLabel = { password: '密码', key: '密钥', agent: 'agent' } as const;
 </script>
 
 <main>
-  <aside>
+  {#if !showAside}
+    <button class="rail" onclick={() => { showAside = true; localStorage.setItem('asideHidden', '0'); }} title="显示服务器列表 (Ctrl+B)">⟩</button>
+  {/if}
+  <aside style:display={showAside ? 'flex' : 'none'}>
     <div class="toolbar">
       <input class="search" placeholder="模糊搜索：名称 备注 用户 主机…" bind:value={query} oninput={search} />
       <button onclick={() => { showForm = !showForm; }} title="添加服务器">＋</button>
+      <button onclick={() => { showAside = false; localStorage.setItem('asideHidden', '1'); }} title="隐藏列表 (Ctrl+B)">⟨</button>
     </div>
     {#if showForm}
       <form class="server-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
@@ -281,6 +304,7 @@
         <Session sessionId={t.sid}
                  profileId={t.profile.id}
                  sessionPassword={t.password}
+                 {fontFamily}
                  active={i === activeIdx}
                  {fontSize}
                  {prefCopyOnSelect}
@@ -305,7 +329,7 @@
         <span class="dot"></span>无活动会话
       {/if}
       <span class="spacer"></span>
-      <button class="gear" onclick={() => showSettings = !showSettings} title="终端设置">⚙</button>
+      <button class="gear" onclick={openSettings} title="终端设置">⚙</button>
       {#if showSettings}
         <div class="settings">
           <label><input type="checkbox" bind:checked={prefCopyOnSelect} /> 选中即复制</label>
@@ -314,6 +338,16 @@
             <span>字号 {fontSize}</span>
             <button onclick={() => setFont(fontSize - 1)}>−</button>
             <button onclick={() => setFont(fontSize + 1)}>＋</button>
+          </div>
+          <div class="fontpick">
+            <span>终端字体</span>
+            <input list="fontlist" placeholder="默认（留空）" value={fontFamily}
+                   aria-label="终端字体"
+                   onchange={(e) => setFontFamily((e.target as HTMLInputElement).value)} />
+            <datalist id="fontlist">
+              {#each (fontList ?? []) as f (f)}<option value={f}></option>{/each}
+            </datalist>
+            <div class="hint">如 MesloLGS NF / Sarasa Mono SC；直接输入名称亦可，需系统已安装</div>
           </div>
           <div class="hint">右键：复制选区/粘贴 · Ctrl+Shift+C/V · Ctrl+F 搜索 · Ctrl+滚轮 缩放</div>
         </div>
@@ -324,6 +358,9 @@
 
 <style>
   main { display: flex; height: 100vh; font-family: system-ui, sans-serif; }
+  .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 22px; z-index: 30; border: none; background: #181818; color: #8ab4f8; cursor: pointer; }
+  .rail:hover { background: #232323; }
+  main { position: relative; }
   aside { width: 300px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #1e1e1e; color: #ddd; }
   .toolbar { display: flex; gap: 6px; padding: 8px; }
   .search { flex: 1; padding: 6px; border-radius: 6px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
@@ -368,4 +405,6 @@
   .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
   .settings .row { display: flex; gap: 8px; align-items: center; }
   .settings .hint { font-size: 11px; color: #777; }
+  .fontpick { display: flex; flex-direction: column; gap: 4px; }
+  .fontpick input { padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
 </style>

@@ -14,6 +14,7 @@
     sessionId: string;
     profileId: string;
     sessionPassword: string | null;
+    fontFamily: string;
     active: boolean;
     fontSize: number;
     prefCopyOnSelect: boolean;
@@ -24,7 +25,7 @@
     registerApi: (sid: string, api: { writeLine: (t: string) => void }) => void;
   };
   let {
-    sessionId, profileId, sessionPassword, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
+    sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
     onClosed, onResize, registerFit, registerApi,
   }: Props = $props();
 
@@ -37,6 +38,12 @@
   let showSftp = $state(false);
   let searchTerm = $state('');
   let dead = $state(false);
+
+  function fontStack() {
+    return fontFamily
+      ? `"${fontFamily}", JetBrains Mono, Sarasa Mono SC, Microsoft YaHei Mono, monospace`
+      : 'JetBrains Mono, Sarasa Mono SC, Microsoft YaHei Mono, monospace';
+  }
 
   function b64ToBytes(s: string): Uint8Array {
     const bin = atob(s);
@@ -74,7 +81,7 @@
 
   onMount(async () => {
     term = new Terminal({
-      fontFamily: 'JetBrains Mono, Sarasa Mono SC, Microsoft YaHei Mono, monospace',
+      fontFamily: fontStack(),
       fontSize,
       scrollback: 10000,
       cursorBlink: true,
@@ -143,8 +150,14 @@
   // active 切换回本会话时重新 fit
   $effect(() => { if (active) requestAnimationFrame(doFit); });
 
-  // 字号变化同步
-  $effect(() => { if (term) { term.options.fontSize = fontSize; if (active) doFit(); } });
+  // 字号/字体变化同步
+  $effect(() => {
+    if (term) {
+      term.options.fontSize = fontSize;
+      term.options.fontFamily = fontStack();
+      if (active) doFit();
+    }
+  });
 
   function closeSearch() {
     showSearch = false;
