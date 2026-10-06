@@ -9,5 +9,9 @@
   </head>
   <body data-sveltekit-preload-data="hover">
     <div style="display: contents">%sveltekit.body%</div>
+    <script>
+      // 全局禁用 WebView 原生右键菜单（终端内右键复制/粘贴由组件自行处理）
+      document.addEventListener('contextmenu', (e) => e.preventDefault());
+    </script>
   </body>
 </html>

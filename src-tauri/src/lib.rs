@@ -4,6 +4,7 @@ pub mod fonts;
 pub mod fuzzy;
 pub mod hostkeys;
 pub mod session;
+pub mod settings;
 pub mod sftp;
 pub mod store;
 
@@ -82,6 +83,8 @@ pub fn run() {
             app.manage(Arc::new(Mutex::new(host_keys)));
             app.manage(Mutex::new(sftp::SftpRegistry::default()));
             app.manage(Mutex::new(dirstate::DirState::load(&dir)?));
+            let settings = settings::AppSettings::load(&dir)?;
+            app.manage(Mutex::new(settings));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -108,6 +111,8 @@ pub fn run() {
             sftp::local_home,
             dirstate::get_dir_state,
             dirstate::set_dir_state,
+            settings::get_settings,
+            settings::set_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running lterm");

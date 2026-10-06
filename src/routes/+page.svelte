@@ -27,14 +27,31 @@
   let tabApis = new Map<string, { writeLine: (t: string) => void }>();
   let noticeQueue: string[] = [];
 
-  // ---- 偏好 ----
-  let prefCopyOnSelect = $state((localStorage.getItem('prefCopyOnSelect') ?? '1') === '1');
-  let prefConfirmMultiLine = $state((localStorage.getItem('prefConfirmMultiLine') ?? '1') === '1');
-  let fontSize = $state(Number(localStorage.getItem('fontSize') ?? 14));
-  let fontFamily = $state(localStorage.getItem('fontFamily') ?? '');
+  // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean };
+  let prefCopyOnSelect = $state(true);
+  let prefConfirmMultiLine = $state(true);
+  let fontSize = $state(14);
+  let fontFamily = $state('');
   let fontList = $state<string[] | null>(null);
   let showSettings = $state(false);
-  let showAside = $state(localStorage.getItem('asideHidden') !== '1');
+  let showAside = $state(true);
+  let settingsLoaded = $state(false);
+
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  async function saveSettings() {
+    if (!settingsLoaded) return;
+    try {
+      await invoke('set_settings', { settings: {
+        fontFamily, fontSize, copyOnSelect: prefCopyOnSelect,
+        confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
+      } satisfies Settings });
+    } catch { /* 保存失败不阻塞界面 */ }
+  }
+  function saveSettingsSoon() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveSettings, 300);
+  }
 
   let unlistenAll: UnlistenFn[] = [];
 
@@ -136,7 +153,7 @@
 
   function setFont(size: number) {
     fontSize = size === 999 ? 14 : Math.min(28, Math.max(10, size));
-    localStorage.setItem('fontSize', String(fontSize));
+    saveSettingsSoon();
     const t = activeTab;
     if (t) requestAnimationFrame(() => fitFns.get(t.sid)?.());
   }
@@ -161,7 +178,7 @@
     } else if (e.ctrlKey && e.key.toLowerCase() === 'b') {
       e.preventDefault();
       showAside = !showAside;
-      localStorage.setItem('asideHidden', showAside ? '0' : '1');
+      saveSettingsSoon();
     } else if (e.ctrlKey && e.key.toLowerCase() === 'w') {
       if (activeIdx >= 0) { e.preventDefault(); closeTab(activeIdx); }
     }
@@ -171,6 +188,32 @@
     window.addEventListener('resize', onWinResize);
     window.addEventListener('lterm-zoom', onZoom);
     window.addEventListener('keydown', onWindowKeydown);
+    try {
+      let s = await invoke<Settings>('get_settings');
+      if (!localStorage.getItem('lterm-settings-migrated')) {
+        const oldFont = localStorage.getItem('fontFamily');
+        const oldSize = Number(localStorage.getItem('fontSize') ?? 0);
+        const oldAside = localStorage.getItem('asideHidden');
+        if (oldFont || oldSize || oldAside !== null) {
+          s = {
+            ...s,
+            fontFamily: oldFont ?? s.fontFamily,
+            fontSize: oldSize >= 10 && oldSize <= 28 ? oldSize : s.fontSize,
+            asideHidden: oldAside === '1',
+            copyOnSelect: (localStorage.getItem('prefCopyOnSelect') ?? '1') === '1',
+            confirmMultiLine: (localStorage.getItem('prefConfirmMultiLine') ?? '1') === '1',
+          };
+          await invoke('set_settings', { settings: s }).catch(() => {});
+        }
+        localStorage.setItem('lterm-settings-migrated', '1');
+      }
+      fontFamily = s.fontFamily;
+      fontSize = s.fontSize;
+      showAside = !s.asideHidden;
+      prefCopyOnSelect = s.copyOnSelect;
+      prefConfirmMultiLine = s.confirmMultiLine;
+    } catch { /* 用默认值 */ }
+    settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
       noticeQueue.push(`\x1b[33m[安全] 新主机 ${ev.payload.host}:${ev.payload.port}，指纹已记录: ${ev.payload.fingerprint}\x1b[0m`);
     }));
@@ -194,11 +237,6 @@
     if (t) requestAnimationFrame(() => fitFns.get(t.sid)?.());
   }
 
-  $effect(() => {
-    localStorage.setItem('prefCopyOnSelect', prefCopyOnSelect ? '1' : '0');
-    localStorage.setItem('prefConfirmMultiLine', prefConfirmMultiLine ? '1' : '0');
-  });
-
   onDestroy(() => {
     window.removeEventListener('resize', onWinResize);
     window.removeEventListener('lterm-zoom', onZoom);
@@ -215,7 +253,12 @@
 
   function setFontFamily(v: string) {
     fontFamily = v;
-    localStorage.setItem('fontFamily', v);
+    saveSettingsSoon();
+  }
+
+  function toggleAside(v: boolean) {
+    showAside = v;
+    saveSettingsSoon();
   }
 
   const authLabel = { password: '密码', key: '密钥', agent: 'agent' } as const;
@@ -223,13 +266,13 @@
 
 <main>
   {#if !showAside}
-    <button class="rail" onclick={() => { showAside = true; localStorage.setItem('asideHidden', '0'); }} title="显示服务器列表 (Ctrl+B)">⟩</button>
+    <button class="rail" onclick={() => toggleAside(true)} title="显示服务器列表 (Ctrl+B)">⟩</button>
   {/if}
   <aside style:display={showAside ? 'flex' : 'none'}>
     <div class="toolbar">
       <input class="search" placeholder="模糊搜索：名称 备注 用户 主机…" bind:value={query} oninput={search} />
       <button onclick={() => { showForm = !showForm; }} title="添加服务器">＋</button>
-      <button onclick={() => { showAside = false; localStorage.setItem('asideHidden', '1'); }} title="隐藏列表 (Ctrl+B)">⟨</button>
+      <button onclick={() => toggleAside(false)} title="隐藏列表 (Ctrl+B)">⟨</button>
     </div>
     {#if showForm}
       <form class="server-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
@@ -259,12 +302,14 @@
     <ul class="server-list">
       {#each hits as hit (hit.server.id)}
         <li>
-          <button class="server" onclick={() => connect(hit.server)} ondblclick={() => edit(hit.server)}
-                  title="单击连接 · 双击编辑">
+          <button class="server" ondblclick={() => connect(hit.server)}
+                  onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(hit.server); } }}
+                  title="双击连接">
             <span class="name">{hit.server.name}</span>
             <span class="meta">{hit.server.username}@{hit.server.host} · {authLabel[hit.server.auth_method]}</span>
             {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
           </button>
+          <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
           <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
         </li>
       {:else}
@@ -296,7 +341,7 @@
       {#if tabs.length === 0}
         <div class="welcome">
           <h2>lterm</h2>
-          <p>左侧添加服务器，单击连接。支持 ssh-agent / 密钥 / 密码认证。</p>
+          <p>左侧添加服务器，双击连接。支持 ssh-agent / 密钥 / 密码认证。</p>
           <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · Ctrl+Shift+C/V 复制/粘贴 · Ctrl+W 关闭标签 · 右键 复制/粘贴</p>
         </div>
       {/if}
@@ -329,27 +374,29 @@
         <span class="dot"></span>无活动会话
       {/if}
       <span class="spacer"></span>
-      <button class="gear" onclick={openSettings} title="终端设置">⚙</button>
+      <button class="gear" onclick={openSettings} title="终端设置">⚙ 设置</button>
       {#if showSettings}
         <div class="settings">
-          <label><input type="checkbox" bind:checked={prefCopyOnSelect} /> 选中即复制</label>
-          <label><input type="checkbox" bind:checked={prefConfirmMultiLine} /> 多行粘贴确认</label>
-          <div class="row">
-            <span>字号 {fontSize}</span>
+          <div class="srow">
+            <label><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
+            <label><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
+          </div>
+          <div class="srow">
+            <span class="lbl">字号</span>
             <button onclick={() => setFont(fontSize - 1)}>−</button>
+            <span class="num">{fontSize}</span>
             <button onclick={() => setFont(fontSize + 1)}>＋</button>
           </div>
-          <div class="fontpick">
-            <span>终端字体</span>
-            <input list="fontlist" placeholder="默认（留空）" value={fontFamily}
+          <div class="srow">
+            <span class="lbl">字体</span>
+            <input class="fontin" list="fontlist" placeholder="默认（留空）" value={fontFamily}
                    aria-label="终端字体"
                    onchange={(e) => setFontFamily((e.target as HTMLInputElement).value)} />
             <datalist id="fontlist">
               {#each (fontList ?? []) as f (f)}<option value={f}></option>{/each}
             </datalist>
-            <div class="hint">如 MesloLGS NF / Sarasa Mono SC；直接输入名称亦可，需系统已安装</div>
           </div>
-          <div class="hint">右键：复制选区/粘贴 · Ctrl+Shift+C/V · Ctrl+F 搜索 · Ctrl+滚轮 缩放</div>
+          <div class="hint">字体需系统已安装（如 MesloLGS NF），可直接输入名称；改动即时生效并保存</div>
         </div>
       {/if}
     </div>
@@ -400,11 +447,14 @@
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #555; }
   .dot.connected { background: #4caf50; }
   .dot.closed { background: #e6a23c; }
-  .gear { background: none; border: none; color: #999; cursor: pointer; font-size: 14px; }
-  .settings { position: absolute; bottom: 28px; right: 8px; background: #252525; border: 1px solid #444; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; z-index: 10; min-width: 230px; color: #ccc; }
-  .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
-  .settings .row { display: flex; gap: 8px; align-items: center; }
-  .settings .hint { font-size: 11px; color: #777; }
-  .fontpick { display: flex; flex-direction: column; gap: 4px; }
-  .fontpick input { padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
+  .gear { background: none; border: none; color: #999; cursor: pointer; font-size: 12px; }
+  .icon { border: none; background: none; color: #666; cursor: pointer; padding: 0 6px; }
+  .icon:hover { color: #8ab4f8; }
+  .settings { position: absolute; bottom: 28px; right: 8px; background: #252525; border: 1px solid #444; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; z-index: 10; width: 340px; color: #ccc; }
+  .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; white-space: nowrap; }
+  .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+  .srow .lbl { width: 30px; color: #aaa; flex-shrink: 0; }
+  .srow .num { width: 26px; text-align: center; }
+  .srow .fontin { flex: 1; min-width: 100px; padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
+  .settings .hint { font-size: 11px; color: #777; white-space: normal; }
 </style>
