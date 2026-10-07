@@ -44,6 +44,14 @@ fn resolve_data_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
     PathBuf::from(base).join("lterm").join("data")
 }
 
+/// F12：打开 WebView 开发者工具（release 构建已启用 devtools feature）
+#[tauri::command]
+fn toggle_devtools(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        w.open_devtools();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     std::panic::set_hook(Box::new(|info| {
@@ -115,6 +123,7 @@ pub fn run() {
             settings::get_settings,
             settings::set_settings,
             clipboard::clipboard_write,
+            toggle_devtools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running lterm");

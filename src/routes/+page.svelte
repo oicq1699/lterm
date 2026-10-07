@@ -164,6 +164,11 @@
   }
 
   function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key === 'F12') {
+      e.preventDefault();
+      invoke('toggle_devtools').catch(() => {});
+      return;
+    }
     if (e.ctrlKey && e.key === 'Tab') {
       e.preventDefault();
       if (tabs.length > 1) {
@@ -266,7 +271,7 @@
 
 <main>
   {#if !showAside}
-    <button class="rail" onclick={() => toggleAside(true)} title="显示服务器列表 (Ctrl+B)">⟩</button>
+    <button class="rail" onclick={() => toggleAside(true)} title="显示服务器列表 (Ctrl+B)" aria-label="显示服务器列表">»</button>
   {/if}
   <aside style:display={showAside ? 'flex' : 'none'}>
     <div class="toolbar">
@@ -293,6 +298,22 @@
           {/if}
         </div>
         <input placeholder="备注" bind:value={draft.remark} />
+        <div class="row">
+          <span class="lbl">配色</span>
+          <select class="colorsel" value={draft.color ?? ''}
+                  onchange={(e) => { draft.color = (e.target as HTMLSelectElement).value || null; }}>
+            <option value="">默认</option>
+            <option value="#e57373">红</option>
+            <option value="#f0a060">橙</option>
+            <option value="#e6c060">黄</option>
+            <option value="#4caf50">绿</option>
+            <option value="#4fd6be">青</option>
+            <option value="#4c8bf5">蓝</option>
+            <option value="#b39ddb">紫</option>
+            <option value="#f48fb1">粉</option>
+          </select>
+          {#if draft.color}<span class="swatch" style:background={draft.color}></span>{/if}
+        </div>
         <div class="row">
           <button type="submit">保存</button>
           <button type="button" onclick={() => { showForm = false; draft = emptyDraft(); }}>取消</button>
@@ -322,6 +343,7 @@
     <div class="tabbar">
       {#each tabs as t, i}
         <div class="tab" class:active={i === activeIdx} role="tab" tabindex={0} aria-selected={i === activeIdx}
+             style={t.profile.color ? `box-shadow: inset 0 3px 0 0 ${t.profile.color};` : ''}
              onclick={() => { activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); }}
              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); } }}>
           <span class="dot" class:connected={t.alive} class:closed={!t.alive}></span>
@@ -349,6 +371,7 @@
         <Session sessionId={t.sid}
                  profileId={t.profile.id}
                  sessionPassword={t.password}
+                 profileColor={t.profile.color}
                  {fontFamily}
                  active={i === activeIdx}
                  {fontSize}
@@ -374,6 +397,7 @@
         <span class="dot"></span>无活动会话
       {/if}
       <span class="spacer"></span>
+      <button class="gear" onclick={() => toggleAside(!showAside)} title="显示/隐藏服务器列表 (Ctrl+B)">☰ 列表</button>
       <button class="gear" onclick={openSettings} title="终端设置">⚙ 设置</button>
       {#if showSettings}
         <div class="settings">
@@ -405,8 +429,8 @@
 
 <style>
   main { display: flex; height: 100vh; font-family: system-ui, sans-serif; }
-  .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 22px; z-index: 30; border: none; background: #181818; color: #8ab4f8; cursor: pointer; }
-  .rail:hover { background: #232323; }
+  .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 30px; z-index: 40; border: none; border-right: 1px solid #3a3a3a; background: #202020; color: #8ab4f8; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; padding: 0; }
+  .rail:hover { background: #2d3a4a; }
   main { position: relative; }
   aside { width: 300px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #1e1e1e; color: #ddd; }
   .toolbar { display: flex; gap: 6px; padding: 8px; }
@@ -416,6 +440,9 @@
   .server-form .row { display: flex; gap: 6px; }
   .server-form input, .server-form select, .server-form button { padding: 5px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .port { width: 70px; }
+  .server-form .lbl { color: #999; font-size: 12px; align-self: center; flex-shrink: 0; }
+  .colorsel { flex: 1; }
+  .swatch { width: 16px; height: 16px; border-radius: 4px; align-self: center; border: 1px solid #555; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }
   .server { flex: 1; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
