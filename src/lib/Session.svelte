@@ -6,6 +6,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { SearchAddon } from '@xterm/addon-search';
   import { Unicode11Addon } from '@xterm/addon-unicode11';
+  import { WebglAddon } from '@xterm/addon-webgl';
   import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
   import '@xterm/xterm/css/xterm.css';
   import SftpBrowser from './SftpBrowser.svelte';
@@ -99,6 +100,12 @@
     term.loadAddon(u11);
     term.unicode.activeVersion = '11';
     term.open(termHost!);
+    // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* 已释放 */ } });
+      term.loadAddon(webgl);
+    } catch { /* 无 WebGL 环境，保持默认渲染器 */ }
     requestAnimationFrame(() => {
       doFit();
       term?.focus();
