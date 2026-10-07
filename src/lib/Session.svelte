@@ -146,14 +146,18 @@
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || !e.ctrlKey) return true;
       const k = e.key.toLowerCase();
-      if (e.shiftKey && k === 'c') { copySelection(); return false; }
-      if (e.shiftKey && k === 'v') { pasteClipboard(); return false; }
-      if (!e.shiftKey && k === 'f') { showSearch = true; return false; }
-      if (k === '=' || k === '+') { window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 1 })); return false; }
-      if (k === '-') { window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: -1 })); return false; }
-      if (k === '0') { window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 999 })); return false; }
+      // preventDefault：屏蔽 WebView2 原生 Ctrl+Shift+C/V 快捷键，避免与手动 paste 叠加成双份
+      if (e.shiftKey && k === 'c') { e.preventDefault(); copySelection(); return false; }
+      if (e.shiftKey && k === 'v') { e.preventDefault(); pasteClipboard(); return false; }
+      if (!e.shiftKey && k === 'f') { e.preventDefault(); showSearch = true; return false; }
+      if (k === '=' || k === '+') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 1 })); return false; }
+      if (k === '-') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: -1 })); return false; }
+      if (k === '0') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 999 })); return false; }
       return true;
     });
+
+    // 捕获阶段拦截原生 paste：xterm 隐藏输入框收到 paste 会再插一遍（与 term.paste 重复）
+    termHost!.addEventListener('paste', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
 
     unlistenAll.push(await listen<{ id: string; data: string }>('pty-output', (ev) => {
       if (ev.payload.id === sessionId) term?.write(b64ToBytes(ev.payload.data));
