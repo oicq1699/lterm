@@ -59,6 +59,7 @@ struct TestServer {
     authorized: Arc<PublicKey>,
     clients: Arc<TokioMutex<HashMap<usize, (ChannelId, server::Handle)>>>,
     id: usize,
+    port: u16,
 }
 
 impl server::Server for TestServer {
@@ -154,12 +155,76 @@ impl server::Handler for TestServer {
         Ok(())
     }
 
+    // ProxyJump 转发：仅允许经本机端口回环（测试自身）
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: russh::Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: server::ChannelOpenHandle,
+        _session: &mut ServerSession,
+    ) -> Result<(), Self::Error> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let target = port_to_connect as u16;
+        if host_to_connect != "127.0.0.1" || target != self.port {
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
+        }
+        let Ok(tcp) = tokio::net::TcpStream::connect(("127.0.0.1", target)).await else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        reply.accept().await;
+        let (mut rx, tx) = channel.split();
+        tokio::spawn(async move {
+            let (mut tr, mut tw) = tcp.into_split();
+            let t2c = async {
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    match tr.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if tx.data_bytes(buf[..n].to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            };
+            let c2t = async {
+                while let Some(msg) = rx.wait().await {
+                    match msg {
+                        ChannelMsg::Data { data } => {
+                            if tw.write_all(&data).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+            };
+            let _ = tokio::join!(t2c, c2t);
+        });
+        Ok(())
+    }
+
     async fn data(
         &mut self,
         channel: ChannelId,
         data: &[u8],
         session: &mut ServerSession,
     ) -> Result<(), Self::Error> {
+        // 仅对已注册的主会话通道 echo；direct-tcpip 隧道通道由转发泵独享，
+        // 若再回注会造成字节重复、破坏内层 SSH 流（channel id 跨连接会重复，需按 self.id 匹配）
+        {
+            let clients = self.clients.lock().await;
+            match clients.get(&self.id) {
+                Some((cid, _)) if *cid == channel => {}
+                _ => return Ok(()),
+            }
+        }
         // echo 回来；看到回车补一行，模拟 shell 提示符行为
         session.data(channel, data.to_vec())?;
         if data.contains(&b'\r') {
@@ -187,6 +252,7 @@ async fn start_test_server() -> (u16, PublicKey, tokio::task::JoinHandle<()>) {
         authorized: Arc::new(authorized.clone()),
         clients: Arc::new(TokioMutex::new(HashMap::new())),
         id: 0,
+        port,
     };
     let task = tokio::spawn(async move {
         let _ = sh.run_on_socket(config, &listener).await;
@@ -206,6 +272,7 @@ fn base_profile(port: u16, method: AuthMethod) -> ServerProfile {
         remark: String::new(),
         group_tag: None,
         color: None,
+        proxy_jump: None,
         created_at: 0,
         updated_at: 0,
     }
@@ -346,6 +413,57 @@ async fn pty_shell_echo_roundtrip() {
 
     assert!(got, "PTY 输出中未看到回显标记");
     close(handle).await;
+    task.abort();
+}
+
+#[tokio::test]
+async fn proxyjump_direct_tcpip_chain() {
+    // 跳板 = 测试服务器自身回环：client → jump（认证）→ direct-tcpip → connect_stream → 目标（认证）→ PTY echo
+    let (port, _a, task) = start_test_server().await;
+    let mut jump = connect_and_auth(port, AuthMethod::Password, Some("pass123".into()), None)
+        .await
+        .expect("跳板连接应成功");
+
+    let ch = jump
+        .channel_open_direct_tcpip("127.0.0.1", port as u32, "127.0.0.1", 0)
+        .await
+        .expect("direct-tcpip 通道应打开");
+    let mut inner = client::connect_stream(Arc::new(client::Config::default()), ch.into_stream(), AcceptAll)
+        .await
+        .expect("经隧道 SSH 握手应成功");
+    let mut profile = base_profile(port, AuthMethod::Password);
+    profile.id = "target".into();
+    auth::authenticate(&mut inner, &profile, Some("pass123".into()))
+        .await
+        .expect("经跳板认证应成功");
+
+    let session = inner.channel_open_session().await.unwrap();
+    session
+        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
+        .await
+        .unwrap();
+    session.request_shell(true).await.unwrap();
+    let (mut rx, tx) = session.split();
+    tx.data_bytes(b"echo LTERM_PROXY_MARKER\r".to_vec()).await.unwrap();
+
+    let got = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut out: Vec<u8> = Vec::new();
+        while let Some(msg) = rx.wait().await {
+            if let ChannelMsg::Data { ref data } = msg {
+                out.extend_from_slice(&data[..]);
+                if String::from_utf8_lossy(&out).contains("LTERM_PROXY_MARKER") {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(got, "经跳板的 PTY 回显未收到");
+    close(inner).await;
+    close(jump).await;
     task.abort();
 }
 

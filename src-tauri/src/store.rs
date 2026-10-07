@@ -28,6 +28,9 @@ pub struct ServerProfile {
     pub group_tag: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
+    /// ProxyJump：经由另一台已保存服务器（profile id）跳转
+    #[serde(default)]
+    pub proxy_jump: Option<String>,
     #[serde(default)]
     pub created_at: u64,
     #[serde(default)]

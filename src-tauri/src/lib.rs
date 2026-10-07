@@ -4,6 +4,7 @@ pub mod dirstate;
 pub mod fonts;
 pub mod fuzzy;
 pub mod hostkeys;
+pub mod jump;
 pub mod session;
 pub mod settings;
 pub mod sftp;
@@ -123,6 +124,7 @@ pub fn run() {
             settings::get_settings,
             settings::set_settings,
             clipboard::clipboard_write,
+            jump::get_proxy_chain,
             toggle_devtools,
         ])
         .run(tauri::generate_context!())

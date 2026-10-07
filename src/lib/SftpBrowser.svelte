@@ -49,7 +49,18 @@
 
   async function ensureOpen() {
     if (ready) return;
-    await invoke('sftp_open', { sid, profileId, password });
+    type Hop = { id: string; name: string; host: string; port: number; username: string; auth_method: 'password' | 'key' | 'agent' };
+    const chain = await invoke<Hop[]>('get_proxy_chain', { profileId });
+    const pwMap: Record<string, string> = {};
+    if (password) pwMap[profileId] = password;
+    for (const h of chain) {
+      if (h.auth_method !== 'password') continue;
+      if (h.id === profileId && password) continue;
+      const pw = prompt(`密码 (${h.name} · ${h.username}@${h.host}:${h.port})`);
+      if (pw === null) throw new Error('已取消');
+      pwMap[h.id] = pw;
+    }
+    await invoke('sftp_open', { sid, profileId, password, proxyPasswords: pwMap });
     ready = true;
   }
 

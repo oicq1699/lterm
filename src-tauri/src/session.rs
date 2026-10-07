@@ -9,7 +9,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
 
-use crate::auth;
 use crate::hostkeys::{fingerprint, HostKeys, KeyStatus};
 use crate::store::{ServerProfile, ServerStore};
 
@@ -138,6 +137,7 @@ pub async fn connect(
     store: State<'_, Mutex<ServerStore>>,
     profile_id: String,
     password: Option<String>,
+    proxy_passwords: Option<HashMap<String, String>>,
     cols: u32,
     rows: u32,
 ) -> Result<String, String> {
@@ -152,19 +152,11 @@ pub async fn connect(
 
     let id: String = uuid::Uuid::new_v4().to_string();
 
-    let handler = LtermHandler {
-        app: app.clone(),
-        host_keys: app.state::<Arc<Mutex<HostKeys>>>().inner().clone(),
-        host: profile.host.clone(),
-        port: profile.port,
-    };
-
-    let config = Arc::new(client::Config::default());
-    let mut handle = client::connect(config, (&profile.host[..], profile.port), handler)
-        .await
-        .map_err(|e| format!("连接 {}:{} 失败: {e}", profile.host, profile.port))?;
-
-    auth::authenticate(&mut handle, &profile, password).await?;
+    let mut passwords = proxy_passwords.unwrap_or_default();
+    if let Some(pw) = password {
+        passwords.insert(profile_id.clone(), pw);
+    }
+    let (mut handle, guards) = crate::jump::connect_chain(app.clone(), &*store, &profile, &passwords).await?;
 
     let channel = handle
         .channel_open_session()
@@ -185,6 +177,8 @@ pub async fn connect(
 
     let actor_id = id.clone();
     tauri::async_runtime::spawn(async move {
+        // 跳板连接保活至本会话结束
+        let _guards = guards;
         // 合帧缓冲：8ms 窗口聚合输出，超大立即刷
         let mut buf: Vec<u8> = Vec::new();
         let mut ticker = tokio::time::interval(Duration::from_millis(COALESCE_MS));

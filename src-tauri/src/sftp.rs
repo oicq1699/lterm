@@ -84,12 +84,14 @@ pub fn spawn_worker(
     sid: String,
     session: SftpSession,
     keepalive: russh::client::Handle<crate::session::LtermHandler>,
+    guards: Vec<crate::jump::JumpGuard>,
 ) -> mpsc::UnboundedSender<SftpJob> {
     let sftp = Arc::new(session);
     let (tx, mut rx) = mpsc::unbounded_channel::<SftpJob>();
     let registry_sid = sid.clone();
     tauri::async_runtime::spawn(async move {
         let _keepalive = keepalive;
+        let _guards = guards;
         let mut transfers: HashMap<String, oneshot::Sender<()>> = HashMap::new();
         while let Some(job) = rx.recv().await {
             match job {
@@ -477,7 +479,6 @@ fn job_tx(registry: &State<Mutex<SftpRegistry>>, sid: &str) -> Result<mpsc::Unbo
     guard.entries.get(sid).cloned().ok_or("该会话未打开 SFTP".to_string())
 }
 
-/// 在独立 SSH 连接上建立 SFTP：与终端会话共用 sid，互不干扰。
 #[tauri::command]
 pub fn local_remove(path: String, recursive: bool) -> Result<(), String> {
     let p = PathBuf::from(&path);
@@ -498,6 +499,7 @@ pub fn local_rename(from: String, to: String) -> Result<(), String> {
     std::fs::rename(&from, &to).map_err(|e| e.to_string())
 }
 
+/// 在独立 SSH 连接上建立 SFTP：与终端会话共用 sid，互不干扰。
 #[tauri::command]
 pub async fn sftp_open(
     app: AppHandle,
@@ -506,6 +508,7 @@ pub async fn sftp_open(
     sid: String,
     profile_id: String,
     password: Option<String>,
+    proxy_passwords: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
     {
         let guard = registry.lock().unwrap();
@@ -522,16 +525,11 @@ pub async fn sftp_open(
         .cloned()
         .ok_or_else(|| format!("未找到服务器 {profile_id}"))?;
 
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(
-        config,
-        (profile.host.as_str(), profile.port),
-        crate::session::LtermHandler::for_host(app.clone(), &profile),
-    )
-    .await
-    .map_err(|e| format!("SFTP 连接失败: {e}"))?;
-
-    crate::auth::authenticate(&mut handle, &profile, password).await?;
+    let mut passwords = proxy_passwords.unwrap_or_default();
+    if let Some(pw) = password {
+        passwords.insert(profile_id.clone(), pw);
+    }
+    let (mut handle, guards) = crate::jump::connect_chain(app.clone(), &*store, &profile, &passwords).await?;
 
     let channel = handle
         .channel_open_session()
@@ -546,7 +544,7 @@ pub async fn sftp_open(
         .await
         .map_err(|e| format!("SFTP 初始化失败: {e}"))?;
 
-    let worker_tx = spawn_worker(app, sid.clone(), session, handle);
+    let worker_tx = spawn_worker(app, sid.clone(), session, handle, guards);
     registry.lock().unwrap().entries.insert(sid, worker_tx);
     Ok(())
 }

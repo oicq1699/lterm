@@ -8,10 +8,12 @@
     id: string; name: string; host: string; port: number; username: string;
     auth_method: 'password' | 'key' | 'agent'; key_path: string | null;
     remark: string; group_tag: string | null; color: string | null;
+    proxy_jump: string | null;
     created_at: number; updated_at: number;
   };
   type Hit = { server: Profile; score: number };
   type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null };
+  type Hop = { id: string; name: string; host: string; port: number; username: string; auth_method: 'password' | 'key' | 'agent' };
 
   let servers: Profile[] = $state([]);
   let hits: Hit[] = $state([]);
@@ -60,7 +62,7 @@
   function emptyDraft(): Profile {
     return { id: '', name: '', host: '', port: 22, username: 'root',
       auth_method: 'agent', key_path: null, remark: '', group_tag: null, color: null,
-      created_at: 0, updated_at: 0 };
+      proxy_jump: null, created_at: 0, updated_at: 0 };
   }
 
   async function refresh() {
@@ -111,11 +113,23 @@
 
   async function connect(p: Profile) {
     error = '';
-    const { cols, rows } = estimateSize();
-    const password = p.auth_method === 'password' ? prompt('输入密码（不落盘）') : null;
+    let chain: Hop[];
     try {
-      const sid = await invoke<string>('connect', { profileId: p.id, password, cols, rows });
-      tabs = [...tabs, { sid, profile: p, alive: true, password }];
+      chain = await invoke<Hop[]>('get_proxy_chain', { profileId: p.id });
+    } catch (e) { error = String(e); return; }
+    const pwMap: Record<string, string> = {};
+    for (const h of chain) {
+      if (h.auth_method !== 'password') continue;
+      const pw = prompt(`密码 (${h.name} · ${h.username}@${h.host}:${h.port})`);
+      if (pw === null) return; // 取消
+      pwMap[h.id] = pw;
+    }
+    const { cols, rows } = estimateSize();
+    try {
+      const sid = await invoke<string>('connect', {
+        profileId: p.id, password: pwMap[p.id] ?? null, proxyPasswords: pwMap, cols, rows,
+      });
+      tabs = [...tabs, { sid, profile: p, alive: true, password: pwMap[p.id] ?? null }];
       activeIdx = tabs.length - 1;
       flushNotices();
     } catch (e) {
@@ -299,6 +313,16 @@
         </div>
         <input placeholder="备注" bind:value={draft.remark} />
         <div class="row">
+          <span class="lbl">跳转</span>
+          <select class="jumpsel" value={draft.proxy_jump ?? ''}
+                  onchange={(e) => { draft.proxy_jump = (e.target as HTMLSelectElement).value || null; }}>
+            <option value="">直连</option>
+            {#each servers.filter((s) => s.id !== draft.id) as s (s.id)}
+              <option value={s.id}>经 {s.name}（{s.username}@{s.host}）</option>
+            {/each}
+          </select>
+        </div>
+        <div class="row">
           <span class="lbl">配色</span>
           <select class="colorsel" value={draft.color ?? ''}
                   onchange={(e) => { draft.color = (e.target as HTMLSelectElement).value || null; }}>
@@ -429,7 +453,7 @@
 
 <style>
   main { display: flex; height: 100vh; font-family: system-ui, sans-serif; }
-  .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 30px; z-index: 40; border: none; border-right: 1px solid #3a3a3a; background: #202020; color: #8ab4f8; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; padding: 0; }
+  .rail { flex-shrink: 0; width: 30px; z-index: 40; border: none; border-right: 1px solid #3a3a3a; background: #202020; color: #8ab4f8; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; padding: 0; }
   .rail:hover { background: #2d3a4a; }
   main { position: relative; }
   aside { width: 300px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #1e1e1e; color: #ddd; }
@@ -442,6 +466,7 @@
   .port { width: 70px; }
   .server-form .lbl { color: #999; font-size: 12px; align-self: center; flex-shrink: 0; }
   .colorsel { flex: 1; }
+  .jumpsel { flex: 1; }
   .swatch { width: 16px; height: 16px; border-radius: 4px; align-self: center; border: 1px solid #555; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }
