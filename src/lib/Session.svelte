@@ -99,6 +99,18 @@
     term.loadAddon(searchAddon);
     term.loadAddon(u11);
     term.unicode.activeVersion = '11';
+    // OSC 52：zellij 等 TUI 请求写系统剪贴板（webview 的 navigator.clipboard 会被权限拦截）
+    term.parser.registerOscHandler(52, (data) => {
+      const semi = data.indexOf(';');
+      const payload = semi >= 0 ? data.slice(semi + 1) : data;
+      if (semi < 0 || payload === '' || payload === '?') return true; // 清空/查询请求：不支持，仅吞掉
+      try {
+        const text = new TextDecoder().decode(b64ToBytes(payload));
+        invoke('clipboard_write', { text }).catch(() => {});
+      } catch { /* base64 非法，忽略 */ }
+      return true;
+    });
+
     term.open(termHost!);
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
     try {

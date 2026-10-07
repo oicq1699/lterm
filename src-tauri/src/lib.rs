@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod clipboard;
 pub mod dirstate;
 pub mod fonts;
 pub mod fuzzy;
@@ -113,6 +114,7 @@ pub fn run() {
             dirstate::set_dir_state,
             settings::get_settings,
             settings::set_settings,
+            clipboard::clipboard_write,
         ])
         .run(tauri::generate_context!())
         .expect("error while running lterm");
