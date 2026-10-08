@@ -143,24 +143,20 @@
 
     term.open(termHost!);
 
-    // WebView2+微软拼音去重：xterm 对一次候选上屏可能经由 keydown即时发送/compositionend延迟发送/
-    // input事件补发 中的多条路径产生重复，且顺序不固定。策略：compositionend 后开一个短窗口，
-    // 窗口内等于本次上屏文本的 onData 全部拦下；窗口结束时若此前从未真正放过一份则补发一次，
-    // 若已放过（keydown 路径抢先送达）则静默吞掉其余重复 —— 无论事件顺序都恰好上屏一份。
+    // WebView2+微软拼音 v5：compositionend 时同步清空辅助输入框，使 xterm 的两条定时器发送
+    // 路径（compositionend 延迟截取 / textarea diff）全部取到空串被跳过；本次上屏由我们**直接**
+    // 发出恰好一份（无延迟、无事后补发）。随后 80ms 吞并窗口仅用于吃掉迟到的全等/结尾片段杂散。
     const helperTa = term.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     let imeDbg = false;
     try { imeDbg = localStorage.getItem('lterm-ime-debug') === '1'; } catch { /* ignore */ }
     let composing = false;
     let cycleSent: string[] = [];
-    let suppress: { c: string; preSent: boolean; timer: ReturnType<typeof setTimeout> } | null = null;
-    function flushSuppress() {
-      if (!suppress) return;
-      const s = suppress;
-      suppress = null;
-      clearTimeout(s.timer);
-      if (!s.preSent && term && !dead) {
-        if (imeDbg) console.log('[ime] FLUSH emit', JSON.stringify(s.c));
-        invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(s.c)) });
+    let swallow: { c: string; timer: ReturnType<typeof setTimeout> } | null = null;
+    function endSwallow() { if (swallow) { clearTimeout(swallow.timer); swallow = null; } }
+    function sendText(s: string) {
+      if (term && !dead) {
+        invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(s)) })
+          .catch((e) => { if (imeDbg) console.warn('[ime] write_input failed', e); });
       }
     }
     if (helperTa) {
@@ -169,15 +165,17 @@
         composing = false;
         const d = (e as CompositionEvent).data ?? '';
         if (!d) { setTimeout(() => { if (!composing) helperTa.value = ''; }, 60); return; }
-        if (suppress) flushSuppress(); // 新提交开始：先把上一笔结算
-        // 本周期 keydown 即时路径已原样发出过 → 不再补发；否则由窗口补发恰好一份
+        endSwallow();
         const preSent = cycleSent.includes(d);
-        suppress = { c: d, preSent, timer: setTimeout(flushSuppress, 40) };
         cycleSent = [];
-        // 关键：同步清空 textarea。xterm 的 compositionend/_handleAnyTextareaChanges 两条
-        // 定时器路径都在 0ms 后读 textarea，取到空串即被自身跳过——重复上屏从源头消失，
-        // 正式那一份由上面的窗口结算发出。
-        helperTa.value = '';
+        helperTa.value = ''; // 让 xterm 定时器路径失效的源头动作
+        if (preSent) {
+          if (imeDbg) console.log('[ime] COMMIT absorbed', JSON.stringify(d));
+        } else {
+          if (imeDbg) console.log('[ime] COMMIT direct', JSON.stringify(d));
+          sendText(d);
+        }
+        swallow = { c: d, timer: setTimeout(endSwallow, 80) };
       });
       if (imeDbg) {
         for (const t of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input', 'keydown', 'keyup', 'paste']) {
@@ -208,23 +206,16 @@
 
     term.onData((d) => {
       if (dead) return;
-      if (imeDbg) console.log('[ime] onData', JSON.stringify(d), 'composing=', composing, 'sup=', suppress ? JSON.stringify(suppress.c) : null);
+      if (imeDbg) console.log('[ime] onData', JSON.stringify(d), 'composing=', composing, 'swallow=', swallow ? JSON.stringify(swallow.c) : null);
       if (composing) cycleSent.push(d);
-      if (suppress) {
-        if (d === suppress.c) {
-          if (suppress.preSent) return; // 已发过一份：吞掉重复
-          suppress.preSent = true;      // 窗口内第一份放行
-          invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(d)) });
+      if (swallow) {
+        // 吞掉与刚上屏全等、或为其结尾片段的迟到杂散发送
+        if (d === swallow.c || (d.length > 0 && d.length < swallow.c.length && swallow.c.endsWith(d))) {
+          if (imeDbg) console.log('[ime] absorb', JSON.stringify(d));
           return;
         }
-        // 保险：窗口内等于上屏文本结尾片段的杂散发送（stale start 截取产物）也吞掉
-        if (d.length > 0 && d.length < suppress.c.length && suppress.c.endsWith(d)) {
-          if (imeDbg) console.log('[ime] swallow tail fragment', JSON.stringify(d));
-          return;
-        }
-        flushSuppress(); // 其他按键先到：先结算上屏文本，保证顺序
       }
-      invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(d)) });
+      sendText(d);
     });
     term.onSelectionChange(() => { if (prefCopyOnSelect) copySelection(); });
 
