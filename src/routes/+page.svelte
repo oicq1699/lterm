@@ -463,6 +463,7 @@
   .server-form { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-bottom: 1px solid #333; }
   .server-form .row { display: flex; gap: 6px; }
   .server-form input, .server-form select, .server-form button { padding: 5px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
+  .server-form option { background: #2a2a2a; color: #eee; }
   .port { width: 70px; }
   .server-form .lbl { color: #999; font-size: 12px; align-self: center; flex-shrink: 0; }
   .colorsel { flex: 1; }
