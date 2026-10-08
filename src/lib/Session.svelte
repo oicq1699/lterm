@@ -272,32 +272,37 @@
     </div>
   {/if}
   {#if showFwd}
-    <div class="fwd-side">
+    <div class="fwd-side" style:right={showSftp ? '580px' : '0'}>
       <div class="sftp-head">
-        <span>端口转发</span>
+        <span>端口转发（本会话）</span>
         <button onclick={() => showFwd = false} aria-label="关闭转发面板">✕</button>
       </div>
       <div class="fwd-form">
-        <input class="lp" type="number" placeholder="本地端口" aria-label="本地端口" bind:value={fwdLocal} />
-        <input placeholder="目标主机" aria-label="目标主机" bind:value={fwdHost} />
-        <input class="lp" type="number" placeholder="目标端口" aria-label="目标端口" bind:value={fwdRemote} />
-        <button onclick={addForward}>添加</button>
+        <div class="frow"><label for="fl-{sessionId}">本地端口</label><input id="fl-{sessionId}" type="number" placeholder="如 8080" bind:value={fwdLocal} /></div>
+        <div class="frow"><label for="fh-{sessionId}">目标主机</label><input id="fh-{sessionId}" placeholder="远端可达地址，如 127.0.0.1" bind:value={fwdHost} /></div>
+        <div class="frow"><label for="fp-{sessionId}">目标端口</label><input id="fp-{sessionId}" type="number" placeholder="如 3306" bind:value={fwdRemote} /></div>
+        <button class="fadd" onclick={addForward}>添加转发</button>
       </div>
       {#if fwdError}<div class="fwd-err">{fwdError} <button onclick={() => fwdError = ''} aria-label="关闭提示">✕</button></div>{/if}
       <ul class="fwd-list">
         {#each forwards as f (f.local)}
           <li>
-            <span class="fwd-line">127.0.0.1:{f.local} → {f.host}:{f.port}</span>
+            <div class="fwd-info">
+              <div class="fwd-main">127.0.0.1:{f.local} → {f.host}:{f.port}</div>
+              <div class="fwd-sub">经当前 SSH 会话转发</div>
+            </div>
             <button onclick={() => delForward(f.local)}>停止</button>
           </li>
         {:else}
-          <li class="fwd-empty">暂无转发。经当前 SSH 连接把本机端口映射到远端可达的地址。</li>
+          <li class="fwd-empty">暂无转发。把本机端口映射到远端可达的地址，等效 ssh -L；关闭标签自动停止。</li>
         {/each}
       </ul>
     </div>
   {/if}
-  <button class="sftp-toggle" class:open={showSftp} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
-  <button class="sftp-toggle fwd-btn" class:open={showFwd} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
+  <div class="tool-stack" style:right={`${8 + (showSftp ? 580 : 0) + (showFwd ? 360 : 0)}px`}>
+    <button class="ptool" class:open={showSftp} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
+    <button class="ptool" class:open={showFwd} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
+  </div>
 </div>
 
 <style>
@@ -311,20 +316,26 @@
   .sftp-side { position: absolute; right: 0; top: 0; bottom: 0; width: 580px; min-width: 420px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 20; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
   .sftp-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
   .sftp-head button { background: none; border: none; color: #999; cursor: pointer; }
-  .sftp-toggle { position: absolute; top: 6px; right: 8px; z-index: 21; background: #222c; border: 1px solid #333; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 2px 8px; }
-  .sftp-toggle.open { color: #101010; background: #8ab4f8; }
-  .fwd-btn { right: 52px; }
-  .fwd-side { width: 300px; min-width: 240px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; }
-  .fwd-form { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid #2a2a2a; }
-  .fwd-form input { padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; font-size: 12px; }
-  .fwd-form .lp { width: 70px; }
-  .fwd-form input:nth-child(2) { flex: 1; min-width: 90px; }
-  .fwd-form button { padding: 4px 10px; }
+  .ptool { background: #222c; border: 1px solid #3a3a3a; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 3px 9px; font-size: 13px; }
+  .ptool.open { color: #101010; background: #8ab4f8; }
+  .ptool:hover { border-color: #8ab4f8; }
+  .tool-stack { position: absolute; top: 6px; z-index: 23; display: flex; gap: 6px; }
+  .fwd-side { position: absolute; top: 0; bottom: 0; width: 360px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 22; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
+  .fwd-form { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #2a2a2a; }
+  .frow { display: flex; align-items: center; gap: 8px; }
+  .frow label { width: 56px; color: #aaa; font-size: 12px; flex-shrink: 0; }
+  .frow input { flex: 1; min-width: 0; padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; font-size: 12px; }
+  .fadd { padding: 5px 12px; border-radius: 5px; border: 1px solid #4c8bf5; background: #233a5c; color: #cfe1ff; cursor: pointer; font-size: 12px; }
+  .fadd:hover { background: #2c4870; }
   .fwd-err { display: flex; justify-content: space-between; padding: 4px 8px; background: #4a1d1d; color: #f0a0a0; font-size: 12px; }
   .fwd-err button { background: none; border: none; color: #f0a0a0; cursor: pointer; }
-  .fwd-list { list-style: none; margin: 0; padding: 4px 8px; overflow-y: auto; flex: 1; }
-  .fwd-list li { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid #262626; font-size: 12px; color: #ccc; }
-  .fwd-line { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fwd-list li button { padding: 2px 8px; font-size: 11px; }
-  .fwd-empty { color: #666; font-size: 12px; padding: 8px 0; display: block; }
+  .fwd-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+  .fwd-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid #262626; }
+  .fwd-list li:hover { background: #1d1d1d; }
+  .fwd-info { min-width: 0; }
+  .fwd-main { font-size: 12px; color: #ddd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fwd-sub { font-size: 11px; color: #777; margin-top: 1px; }
+  .fwd-list li button { padding: 2px 10px; font-size: 11px; border-radius: 4px; border: 1px solid #444; background: #2a2a2a; color: #ccc; cursor: pointer; }
+  .fwd-list li button:hover { color: #e57373; border-color: #e57373; }
+  .fwd-empty { color: #666; font-size: 12px; padding: 10px; display: block; line-height: 1.6; border-bottom: none !important; }
 </style>
