@@ -142,6 +142,19 @@
     });
 
     term.open(termHost!);
+
+    // WebView2+微软拼音：连续候选上屏时 xterm 辅助输入框会累积旧提交，
+    // compositionend 的 substring 取值因此把之前的字一并发出（滑动窗口式重复）。
+    // 组合结束、xterm 自身发送定时器(0ms)跑完后清空输入框，杜绝累积。
+    const helperTa = term.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    if (helperTa) {
+      let composing = false;
+      helperTa.addEventListener('compositionstart', () => { composing = true; });
+      helperTa.addEventListener('compositionend', () => {
+        composing = false;
+        setTimeout(() => { if (!composing) helperTa.value = ''; }, 20);
+      });
+    }
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
     try {
       const webgl = new WebglAddon();
