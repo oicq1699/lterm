@@ -143,15 +143,17 @@
 
     term.open(termHost!);
 
-    // IME 接管(v6)：WebView2 的微软拼音在后续提交时不发 compositionstart，xterm 依赖的
-    // "组合起点"内部状态失效，产生残片/重复（tabby 所在标准 Chromium 无此问题）。
-    // 对策：在捕获层自行维护组合状态机并拦下全部组合相关事件，xterm 不再参与 IME 流程；
-    // compositionend.data 即权威上屏文本，恰好发送一次。彻底移除时序窗口类启发式。
+    // IME 接管 v7：WebView2 不发 compositionstart（日志证实），且 xterm 与目标元素上的监听
+    // 先于同元素后注册者执行——所以全部拦截必须挂在父节点(termHost)捕获阶段才能先于 xterm。
+    // 组合周期识别：compositionstart 或 keydown(keyCode=229) 均置为激活；
+    // compositionend.data 权威上屏，恰好发一次；提交后 150ms 内屏蔽本周期残留按键。
     const helperTa = term.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     let imeDbg = false;
     try { imeDbg = localStorage.getItem('lterm-ime-debug') === '1'; } catch { /* ignore */ }
     let compActive = false;
     let compBuffer = '';
+    let lastCommitAt = 0;
+    const inCompWindow = () => compActive || (Date.now() - lastCommitAt < 150);
     let sendQ: Promise<void> = Promise.resolve();
     function sendText(s: string) {
       if (!term || dead) { if (imeDbg) console.warn('[ime] sendText skipped: term?', !!term, 'dead=', dead); return; }
@@ -176,22 +178,25 @@
           compActive, ta: helperTa.value.slice(-10), ms: new Date().getMilliseconds(),
         }));
       };
-      // 捕获阶段拦到 textarea 的所有器之前：xterm 的监听器（目标阶段）不会执行
+      const isCompInput = (ev: InputEvent) =>
+        ev.inputType === 'insertCompositionText' || ev.inputType === 'insertFromComposition';
+
       termHost!.addEventListener('compositionstart', (e) => {
         dbgEv('compositionstart', e);
         compActive = true; compBuffer = '';
-        e.stopPropagation();
+        e.stopPropagation(); e.preventDefault();
       }, true);
       termHost!.addEventListener('compositionupdate', (e) => {
         dbgEv('compositionupdate', e);
         const d = (e as CompositionEvent).data;
         if (typeof d === 'string') compBuffer = d;
-        e.stopPropagation();
+        e.stopPropagation(); e.preventDefault();
       }, true);
       termHost!.addEventListener('compositionend', (e) => {
         dbgEv('compositionend', e);
         e.stopPropagation();
         compActive = false;
+        lastCommitAt = Date.now();
         const final = (e as CompositionEvent).data || compBuffer;
         compBuffer = '';
         helperTa.value = '';
@@ -200,29 +205,25 @@
           sendText(final);
         }
       }, true);
-      helperTa.addEventListener('input', (e) => {
+      termHost!.addEventListener('keydown', (e) => {
+        const ev = e as KeyboardEvent;
+        if (ev.keyCode === 229) compActive = true; // WebView2: 无 compositionstart，用 229 认定周期
+        if (inCompWindow()) { dbgEv('keydown(blocked)', ev); ev.stopPropagation(); ev.preventDefault(); }
+      }, true);
+      termHost!.addEventListener('keypress', (e) => {
+        if (inCompWindow()) { dbgEv('keypress(blocked)', e); e.stopPropagation(); e.preventDefault(); }
+      }, true);
+      termHost!.addEventListener('beforeinput', (e) => {
         const ev = e as InputEvent;
-        // 组合期间的任何插入都不交给 xterm（上屏统一走 compositionend）
-        if (compActive || ev.inputType === 'insertCompositionText' || ev.inputType === 'insertFromComposition') {
+        if (compActive || isCompInput(ev)) { dbgEv('beforeinput(blocked)', ev); ev.stopPropagation(); }
+      }, true);
+      termHost!.addEventListener('input', (e) => {
+        const ev = e as InputEvent;
+        if (compActive || isCompInput(ev)) {
           dbgEv('input(blocked)', ev);
-          if (ev.inputType === 'insertFromComposition') helperTa.value = '';
-          ev.stopPropagation();
-          ev.preventDefault();
-        }
-      }, true);
-      helperTa.addEventListener('beforeinput', (e) => {
-        const ev = e as InputEvent;
-        if (compActive || ev.inputType === 'insertCompositionText' || ev.inputType === 'insertFromComposition') {
-          dbgEv('beforeinput(blocked)', ev);
+          if (isCompInput(ev)) helperTa.value = '';
           ev.stopPropagation();
         }
-      }, true);
-      // 组合期间的按键不发往 xterm（拼音字母、选词空格/数字/回车都与远端无关）
-      helperTa.addEventListener('keydown', (e) => {
-        if (compActive) { dbgEv('keydown(blocked)', e); e.stopPropagation(); }
-      }, true);
-      helperTa.addEventListener('keypress', (e) => {
-        if (compActive) { dbgEv('keypress(blocked)', e); e.stopPropagation(); }
       }, true);
     }
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
