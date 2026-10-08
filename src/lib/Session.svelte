@@ -187,6 +187,12 @@
     }, { passive: false });
 
     term.attachCustomKeyEventHandler((e) => {
+      // F12 优先拦截：否则 xterm 把功能键当转义序列发送并吞掉事件，window 层监听收不到
+      if (e.type === 'keydown' && e.key === 'F12') {
+        e.preventDefault();
+        invoke('toggle_devtools').catch(() => {});
+        return false;
+      }
       if (e.type !== 'keydown' || !e.ctrlKey) return true;
       const k = e.key.toLowerCase();
       // preventDefault：屏蔽 WebView2 原生 Ctrl+Shift+C/V 快捷键，避免与手动 paste 叠加成双份
