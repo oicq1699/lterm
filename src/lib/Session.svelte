@@ -153,13 +153,19 @@
     let cycleSent: string[] = [];
     let swallow: { c: string; timer: ReturnType<typeof setTimeout> } | null = null;
     function endSwallow() { if (swallow) { clearTimeout(swallow.timer); swallow = null; } }
+    let sendQ: Promise<void> = Promise.resolve();
     function sendText(s: string) {
       if (!term || dead) { if (imeDbg) console.warn('[ime] sendText skipped: term?', !!term, 'dead=', dead); return; }
-      const p = invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(s)) });
-      if (imeDbg) {
-        p.then(() => console.log('[ime] write ok', JSON.stringify(s)))
-         .catch((e) => console.warn('[ime] write FAIL', JSON.stringify(s), String(e)));
-      }
+      // 大内容分块串行写入：避免超大单条 IPC 被丢，也适配远端 pty 的反压
+      const bytes = new TextEncoder().encode(s);
+      const CHUNK = 24 * 1024;
+      sendQ = sendQ.then(async () => {
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          const b64 = bytesToB64(bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+          await invoke('write_input', { id: sessionId, dataBase64: b64 });
+        }
+        if (imeDbg) console.log('[ime] write ok', bytes.length, 'bytes in', Math.max(1, Math.ceil(bytes.length / CHUNK)), 'chunks');
+      }).catch((e) => { if (imeDbg) console.warn('[ime] write FAIL', String(e)); });
     }
     if (helperTa) {
       helperTa.addEventListener('compositionstart', () => { composing = true; cycleSent = []; });
