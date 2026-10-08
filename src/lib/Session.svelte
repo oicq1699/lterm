@@ -143,15 +143,28 @@
 
     term.open(termHost!);
 
-    // WebView2+微软拼音：连续候选上屏时 xterm 辅助输入框会累积旧提交，
-    // compositionend 的 substring 取值因此把之前的字一并发出（滑动窗口式重复）。
-    // 组合结束、xterm 自身发送定时器(0ms)跑完后清空输入框，杜绝累积。
+    // WebView2+微软拼音：
+    // 1) 连续上屏时辅助输入框累积旧提交 → 组合结束后清空，杜绝滑动窗口式重复。
+    // 2) 空格/回车/数字选词时 xterm 会在 keydown 立即发送一次、compositionend 又延迟发送一次
+    //    （textarea 残留）→ 我们在 compositionend 同步清空 textarea，让第二次发送取到空串被跳过。
     const helperTa = term.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     if (helperTa) {
       let composing = false;
+      let keySelectAt = 0;
       helperTa.addEventListener('compositionstart', () => { composing = true; });
+      helperTa.addEventListener('keydown', (e) => {
+        const c = e.keyCode;
+        if (composing && (c === 32 || c === 13 || (c >= 48 && c <= 57) || (c >= 96 && c <= 105))) {
+          keySelectAt = Date.now();
+        }
+      });
+      helperTa.addEventListener('compositionupdate', () => { keySelectAt = 0; });
       helperTa.addEventListener('compositionend', () => {
         composing = false;
+        if (keySelectAt && Date.now() - keySelectAt < 60) {
+          helperTa.value = ''; // xterm 的重复发送在其 0ms 定时器里取到空串即被跳过
+        }
+        keySelectAt = 0;
         setTimeout(() => { if (!composing) helperTa.value = ''; }, 20);
       });
     }
