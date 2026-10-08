@@ -81,6 +81,35 @@
     if (term && !dead) onResize(term.cols, term.rows);
   }
 
+  // ---- 端口转发 ----
+  type Fwd = { local: number; host: string; port: number };
+  let showFwd = $state(false);
+  let forwards = $state<Fwd[]>([]);
+  let fwdLocal = $state('');
+  let fwdHost = $state('');
+  let fwdRemote = $state('');
+  let fwdError = $state('');
+
+  async function refreshForwards() {
+    try { forwards = await invoke<Fwd[]>('forward_list', { id: sessionId }); } catch { forwards = []; }
+  }
+  async function addForward() {
+    fwdError = '';
+    const local = Number(fwdLocal), port = Number(fwdRemote);
+    if (!local || !port || !fwdHost.trim()) { fwdError = '请填写本地端口 / 目标主机 / 目标端口'; return; }
+    try {
+      await invoke('forward_add', { id: sessionId, local, host: fwdHost.trim(), port });
+      fwdLocal = ''; fwdHost = ''; fwdRemote = '';
+      await refreshForwards();
+    } catch (e) { fwdError = String(e); }
+  }
+  async function delForward(local: number) {
+    fwdError = '';
+    try { await invoke('forward_del', { id: sessionId, local }); } catch (e) { fwdError = String(e); }
+    await refreshForwards();
+  }
+  $effect(() => { if (showFwd) void refreshForwards(); });
+
   onMount(async () => {
     term = new Terminal({
       fontFamily: fontStack(),
@@ -157,8 +186,8 @@
       return true;
     });
 
-    // 捕获阶段拦截原生 paste：xterm 隐藏输入框收到 paste 会再插一遍（与 term.paste 重复）
-    termHost!.addEventListener('paste', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
+    // 注意：不要拦截/停止传播 paste 事件——中文 IME 候选词上屏在 WebView2 下经由 paste 提交，
+    // 拦截会导致 xterm 隐藏输入框不清空、后续输入整串重复。双份粘贴已由 keydown preventDefault 解决。
 
     unlistenAll.push(await listen<{ id: string; data: string }>('pty-output', (ev) => {
       if (ev.payload.id === sessionId) term?.write(b64ToBytes(ev.payload.data));
@@ -223,7 +252,33 @@
       <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} />
     </div>
   {/if}
+  {#if showFwd}
+    <div class="fwd-side">
+      <div class="sftp-head">
+        <span>端口转发</span>
+        <button onclick={() => showFwd = false} aria-label="关闭转发面板">✕</button>
+      </div>
+      <div class="fwd-form">
+        <input class="lp" type="number" placeholder="本地端口" aria-label="本地端口" bind:value={fwdLocal} />
+        <input placeholder="目标主机" aria-label="目标主机" bind:value={fwdHost} />
+        <input class="lp" type="number" placeholder="目标端口" aria-label="目标端口" bind:value={fwdRemote} />
+        <button onclick={addForward}>添加</button>
+      </div>
+      {#if fwdError}<div class="fwd-err">{fwdError} <button onclick={() => fwdError = ''} aria-label="关闭提示">✕</button></div>{/if}
+      <ul class="fwd-list">
+        {#each forwards as f (f.local)}
+          <li>
+            <span class="fwd-line">127.0.0.1:{f.local} → {f.host}:{f.port}</span>
+            <button onclick={() => delForward(f.local)}>停止</button>
+          </li>
+        {:else}
+          <li class="fwd-empty">暂无转发。经当前 SSH 连接把本机端口映射到远端可达的地址。</li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
   <button class="sftp-toggle" class:open={showSftp} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
+  <button class="sftp-toggle fwd-btn" class:open={showFwd} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
 </div>
 
 <style>
@@ -239,4 +294,18 @@
   .sftp-head button { background: none; border: none; color: #999; cursor: pointer; }
   .sftp-toggle { position: absolute; top: 6px; right: 8px; z-index: 21; background: #222c; border: 1px solid #333; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 2px 8px; }
   .sftp-toggle.open { color: #101010; background: #8ab4f8; }
+  .fwd-btn { right: 52px; }
+  .fwd-side { width: 300px; min-width: 240px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; }
+  .fwd-form { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid #2a2a2a; }
+  .fwd-form input { padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; font-size: 12px; }
+  .fwd-form .lp { width: 70px; }
+  .fwd-form input:nth-child(2) { flex: 1; min-width: 90px; }
+  .fwd-form button { padding: 4px 10px; }
+  .fwd-err { display: flex; justify-content: space-between; padding: 4px 8px; background: #4a1d1d; color: #f0a0a0; font-size: 12px; }
+  .fwd-err button { background: none; border: none; color: #f0a0a0; cursor: pointer; }
+  .fwd-list { list-style: none; margin: 0; padding: 4px 8px; overflow-y: auto; flex: 1; }
+  .fwd-list li { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid #262626; font-size: 12px; color: #ccc; }
+  .fwd-line { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fwd-list li button { padding: 2px 8px; font-size: 11px; }
+  .fwd-empty { color: #666; font-size: 12px; padding: 8px 0; display: block; }
 </style>

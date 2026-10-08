@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::hostkeys::{fingerprint, HostKeys, KeyStatus};
 use crate::store::{ServerProfile, ServerStore};
@@ -108,6 +108,16 @@ pub enum SessionCmd {
     Input(Vec<u8>),
     Resize { cols: u32, rows: u32 },
     Close,
+    ForwardAdd { local: u16, host: String, port: u16, reply: oneshot::Sender<Result<(), String>> },
+    ForwardDel { local: u16, reply: oneshot::Sender<Result<(), String>> },
+    ForwardList { reply: oneshot::Sender<Vec<ForwardInfo>> },
+}
+
+#[derive(Clone, Serialize)]
+pub struct ForwardInfo {
+    pub local: u16,
+    pub host: String,
+    pub port: u16,
 }
 
 #[derive(Default)]
@@ -171,6 +181,9 @@ pub async fn connect(
         .await
         .map_err(|e| format!("请求 shell 失败: {e}"))?;
 
+    // 端口转发泵需要共享 handle
+    let handle = Arc::new(handle);
+
     let (mut rx, tx) = channel.split();
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SessionCmd>();
     registry.lock().unwrap().entries.insert(id.clone(), cmd_tx);
@@ -184,6 +197,7 @@ pub async fn connect(
         let mut ticker = tokio::time::interval(Duration::from_millis(COALESCE_MS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut reason = String::from("连接中断");
+        let mut forwards: HashMap<u16, (oneshot::Sender<()>, ForwardInfo)> = HashMap::new();
         loop {
             tokio::select! {
                 biased;
@@ -193,6 +207,49 @@ pub async fn connect(
                     }
                     Some(SessionCmd::Resize { cols, rows }) => {
                         let _ = tx.window_change(cols, rows, 0, 0).await;
+                    }
+                    Some(SessionCmd::ForwardAdd { local, host, port, reply }) => {
+                        match tokio::net::TcpListener::bind(("127.0.0.1", local)).await {
+                            Err(e) => { let _ = reply.send(Err(format!("监听 127.0.0.1:{local} 失败: {e}"))); }
+                            Ok(listener) => {
+                                let info = ForwardInfo { local, host: host.clone(), port };
+                                let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+                                let pump_h = handle.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    let _ = reply.send(Ok(()));
+                                    loop {
+                                        tokio::select! {
+                                            _ = &mut stop_rx => break,
+                                            inc = listener.accept() => {
+                                                let Ok((tcp, _peer)) = inc else { continue };
+                                                let h = pump_h.clone();
+                                                let host = host.clone();
+                                                tokio::spawn(async move {
+                                                    if let Ok(ch) = h.channel_open_direct_tcpip(host, port as u32, "127.0.0.1", 0).await {
+                                                        let (mut sr, mut sw) = tokio::io::split(ch.into_stream());
+                                                        let (mut tr, mut tw) = tcp.into_split();
+                                                        let _ = tokio::join!(
+                                                            tokio::io::copy(&mut tr, &mut sw),
+                                                            tokio::io::copy(&mut sr, &mut tw)
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
+                                });
+                                forwards.insert(local, (stop_tx, info));
+                            }
+                        }
+                    }
+                    Some(SessionCmd::ForwardDel { local, reply }) => {
+                        match forwards.remove(&local) {
+                            Some((stop, _)) => { let _ = stop.send(()); let _ = reply.send(Ok(())); }
+                            None => { let _ = reply.send(Err("转发不存在".to_string())); }
+                        }
+                    }
+                    Some(SessionCmd::ForwardList { reply }) => {
+                        let _ = reply.send(forwards.values().map(|(_, i)| i.clone()).collect());
                     }
                     Some(SessionCmd::Close) | None => { reason = "会话已关闭".into(); break; }
                 },
@@ -219,6 +276,9 @@ pub async fn connect(
         if !buf.is_empty() {
             let payload = OutputPayload { id: actor_id.clone(), data: B64.encode(&buf) };
             let _ = app.emit("pty-output", &payload);
+        }
+        for (_, (stop, _)) in forwards.drain() {
+            let _ = stop.send(());
         }
         let _ = handle
             .disconnect(Disconnect::ByApplication, "lterm", "en")
@@ -271,4 +331,43 @@ pub fn disconnect(registry: State<'_, Mutex<Registry>>, id: String) -> Result<()
         .clone();
     let _ = tx.send(SessionCmd::Close);
     Ok(())
+}
+
+fn forward_tx(registry: &State<'_, Mutex<Registry>>, id: &str) -> Result<mpsc::UnboundedSender<SessionCmd>, String> {
+    let guard = registry.lock().unwrap();
+    guard.entries.get(id).cloned().ok_or_else(|| "会话不存在".to_string())
+}
+
+#[tauri::command]
+pub async fn forward_add(
+    registry: State<'_, Mutex<Registry>>,
+    id: String,
+    local: u16,
+    host: String,
+    port: u16,
+) -> Result<(), String> {
+    if host.trim().is_empty() || port == 0 || local == 0 {
+        return Err("本地端口/目标主机/目标端口不能为空".to_string());
+    }
+    let tx = forward_tx(&registry, &id)?;
+    let (r, rx) = oneshot::channel();
+    let host = host.trim().to_string();
+    tx.send(SessionCmd::ForwardAdd { local, host, port, reply: r }).map_err(|_| "会话已关闭".to_string())?;
+    rx.await.map_err(|_| "会话已结束".to_string())?
+}
+
+#[tauri::command]
+pub async fn forward_del(registry: State<'_, Mutex<Registry>>, id: String, local: u16) -> Result<(), String> {
+    let tx = forward_tx(&registry, &id)?;
+    let (r, rx) = oneshot::channel();
+    tx.send(SessionCmd::ForwardDel { local, reply: r }).map_err(|_| "会话已关闭".to_string())?;
+    rx.await.map_err(|_| "会话已结束".to_string())?
+}
+
+#[tauri::command]
+pub async fn forward_list(registry: State<'_, Mutex<Registry>>, id: String) -> Result<Vec<ForwardInfo>, String> {
+    let tx = forward_tx(&registry, &id)?;
+    let (r, rx) = oneshot::channel();
+    tx.send(SessionCmd::ForwardList { reply: r }).map_err(|_| "会话已关闭".to_string())?;
+    rx.await.map_err(|_| "会话已结束".to_string())
 }
