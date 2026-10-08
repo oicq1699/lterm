@@ -143,16 +143,15 @@
 
     term.open(termHost!);
 
-    // WebView2+微软拼音 v5：compositionend 时同步清空辅助输入框，使 xterm 的两条定时器发送
-    // 路径（compositionend 延迟截取 / textarea diff）全部取到空串被跳过；本次上屏由我们**直接**
-    // 发出恰好一份（无延迟、无事后补发）。随后 80ms 吞并窗口仅用于吃掉迟到的全等/结尾片段杂散。
+    // IME 接管(v6)：WebView2 的微软拼音在后续提交时不发 compositionstart，xterm 依赖的
+    // "组合起点"内部状态失效，产生残片/重复（tabby 所在标准 Chromium 无此问题）。
+    // 对策：在捕获层自行维护组合状态机并拦下全部组合相关事件，xterm 不再参与 IME 流程；
+    // compositionend.data 即权威上屏文本，恰好发送一次。彻底移除时序窗口类启发式。
     const helperTa = term.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     let imeDbg = false;
     try { imeDbg = localStorage.getItem('lterm-ime-debug') === '1'; } catch { /* ignore */ }
-    let composing = false;
-    let cycleSent: string[] = [];
-    let swallow: { c: string; timer: ReturnType<typeof setTimeout> } | null = null;
-    function endSwallow() { if (swallow) { clearTimeout(swallow.timer); swallow = null; } }
+    let compActive = false;
+    let compBuffer = '';
     let sendQ: Promise<void> = Promise.resolve();
     function sendText(s: string) {
       if (!term || dead) { if (imeDbg) console.warn('[ime] sendText skipped: term?', !!term, 'dead=', dead); return; }
@@ -168,39 +167,63 @@
       }).catch((e) => { if (imeDbg) console.warn('[ime] write FAIL', String(e)); });
     }
     if (helperTa) {
-      helperTa.addEventListener('compositionstart', () => { composing = true; cycleSent = []; });
-      helperTa.addEventListener('compositionend', (e) => {
-        const wasComposing = composing;
-        composing = false;
-        const d = (e as CompositionEvent).data ?? '';
-        if (imeDbg) console.log('[ime] end', JSON.stringify({ d, wasComposing, cycle: cycleSent.slice(-3), ta: helperTa.value }));
-        if (!d) { setTimeout(() => { if (!composing) helperTa.value = ''; }, 60); return; }
-        endSwallow();
-        // 仅当组合真正开启过(compositionstart 存在)时，cycleSent 才是"本周期已发"的可信凭据；
-        // 无 start 的直接 insertFromComposition 提交，xterm 从没为本字发过即时路径 → 必须直发
-        const preSent = wasComposing && cycleSent.includes(d);
-        cycleSent = [];
+      const dbgEv = (name: string, e: Event) => {
+        if (!imeDbg) return;
+        const ev = e as InputEvent & KeyboardEvent & CompositionEvent;
+        console.log('[ime]', name, JSON.stringify({
+          key: ev.key, keyCode: ev.keyCode, inputType: ev.inputType,
+          data: typeof ev.data === 'string' ? ev.data : undefined,
+          compActive, ta: helperTa.value.slice(-10), ms: new Date().getMilliseconds(),
+        }));
+      };
+      // 捕获阶段拦到 textarea 的所有器之前：xterm 的监听器（目标阶段）不会执行
+      termHost!.addEventListener('compositionstart', (e) => {
+        dbgEv('compositionstart', e);
+        compActive = true; compBuffer = '';
+        e.stopPropagation();
+      }, true);
+      termHost!.addEventListener('compositionupdate', (e) => {
+        dbgEv('compositionupdate', e);
+        const d = (e as CompositionEvent).data;
+        if (typeof d === 'string') compBuffer = d;
+        e.stopPropagation();
+      }, true);
+      termHost!.addEventListener('compositionend', (e) => {
+        dbgEv('compositionend', e);
+        e.stopPropagation();
+        compActive = false;
+        const final = (e as CompositionEvent).data || compBuffer;
+        compBuffer = '';
         helperTa.value = '';
-        if (preSent) {
-          if (imeDbg) console.log('[ime] COMMIT absorbed', JSON.stringify(d));
-        } else {
-          if (imeDbg) console.log('[ime] COMMIT direct', JSON.stringify(d));
-          sendText(d);
+        if (final) {
+          if (imeDbg) console.log('[ime] COMMIT', JSON.stringify(final));
+          sendText(final);
         }
-        swallow = { c: d, timer: setTimeout(endSwallow, 80) };
-      });
-      if (imeDbg) {
-        for (const t of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input', 'keydown', 'keyup', 'paste']) {
-          helperTa.addEventListener(t, (e: Event) => {
-            const ev = e as InputEvent & KeyboardEvent & CompositionEvent;
-            console.log('[ime]', t, JSON.stringify({
-              key: ev.key, keyCode: ev.keyCode, isComposing: ev.isComposing,
-              inputType: ev.inputType, data: typeof ev.data === 'string' ? ev.data : undefined,
-              ta: helperTa.value.slice(-10), ms: new Date().getMilliseconds(),
-            }));
-          }, true);
+      }, true);
+      helperTa.addEventListener('input', (e) => {
+        const ev = e as InputEvent;
+        // 组合期间的任何插入都不交给 xterm（上屏统一走 compositionend）
+        if (compActive || ev.inputType === 'insertCompositionText' || ev.inputType === 'insertFromComposition') {
+          dbgEv('input(blocked)', ev);
+          if (ev.inputType === 'insertFromComposition') helperTa.value = '';
+          ev.stopPropagation();
+          ev.preventDefault();
         }
-      }
+      }, true);
+      helperTa.addEventListener('beforeinput', (e) => {
+        const ev = e as InputEvent;
+        if (compActive || ev.inputType === 'insertCompositionText' || ev.inputType === 'insertFromComposition') {
+          dbgEv('beforeinput(blocked)', ev);
+          ev.stopPropagation();
+        }
+      }, true);
+      // 组合期间的按键不发往 xterm（拼音字母、选词空格/数字/回车都与远端无关）
+      helperTa.addEventListener('keydown', (e) => {
+        if (compActive) { dbgEv('keydown(blocked)', e); e.stopPropagation(); }
+      }, true);
+      helperTa.addEventListener('keypress', (e) => {
+        if (compActive) { dbgEv('keypress(blocked)', e); e.stopPropagation(); }
+      }, true);
     }
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
     try {
@@ -218,15 +241,7 @@
 
     term.onData((d) => {
       if (dead) return;
-      if (imeDbg) console.log('[ime] onData', JSON.stringify(d), 'composing=', composing, 'swallow=', swallow ? JSON.stringify(swallow.c) : null);
-      if (composing) cycleSent.push(d);
-      if (swallow) {
-        // 吞掉与刚上屏全等、或为其结尾片段的迟到杂散发送
-        if (d === swallow.c || (d.length > 0 && d.length < swallow.c.length && swallow.c.endsWith(d))) {
-          if (imeDbg) console.log('[ime] absorb', JSON.stringify(d));
-          return;
-        }
-      }
+      if (imeDbg) console.log('[ime] onData', JSON.stringify(d), 'compActive=', compActive);
       sendText(d);
     });
     term.onSelectionChange(() => { if (prefCopyOnSelect) copySelection(); });
