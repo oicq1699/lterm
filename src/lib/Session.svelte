@@ -154,21 +154,27 @@
     let swallow: { c: string; timer: ReturnType<typeof setTimeout> } | null = null;
     function endSwallow() { if (swallow) { clearTimeout(swallow.timer); swallow = null; } }
     function sendText(s: string) {
-      if (term && !dead) {
-        invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(s)) })
-          .catch((e) => { if (imeDbg) console.warn('[ime] write_input failed', e); });
+      if (!term || dead) { if (imeDbg) console.warn('[ime] sendText skipped: term?', !!term, 'dead=', dead); return; }
+      const p = invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(s)) });
+      if (imeDbg) {
+        p.then(() => console.log('[ime] write ok', JSON.stringify(s)))
+         .catch((e) => console.warn('[ime] write FAIL', JSON.stringify(s), String(e)));
       }
     }
     if (helperTa) {
       helperTa.addEventListener('compositionstart', () => { composing = true; cycleSent = []; });
       helperTa.addEventListener('compositionend', (e) => {
+        const wasComposing = composing;
         composing = false;
         const d = (e as CompositionEvent).data ?? '';
+        if (imeDbg) console.log('[ime] end', JSON.stringify({ d, wasComposing, cycle: cycleSent.slice(-3), ta: helperTa.value }));
         if (!d) { setTimeout(() => { if (!composing) helperTa.value = ''; }, 60); return; }
         endSwallow();
-        const preSent = cycleSent.includes(d);
+        // 仅当组合真正开启过(compositionstart 存在)时，cycleSent 才是"本周期已发"的可信凭据；
+        // 无 start 的直接 insertFromComposition 提交，xterm 从没为本字发过即时路径 → 必须直发
+        const preSent = wasComposing && cycleSent.includes(d);
         cycleSent = [];
-        helperTa.value = ''; // 让 xterm 定时器路径失效的源头动作
+        helperTa.value = '';
         if (preSent) {
           if (imeDbg) console.log('[ime] COMMIT absorbed', JSON.stringify(d));
         } else {
