@@ -167,15 +167,17 @@
       helperTa.addEventListener('compositionstart', () => { composing = true; cycleSent = []; });
       helperTa.addEventListener('compositionend', (e) => {
         composing = false;
-        const c = ((e as CompositionEvent).data ?? '') || helperTa.value;
+        const d = (e as CompositionEvent).data ?? '';
+        if (!d) { setTimeout(() => { if (!composing) helperTa.value = ''; }, 60); return; }
         if (suppress) flushSuppress(); // 新提交开始：先把上一笔结算
-        if (c) {
-          // 本次组合周期内已经原样发出过一份（keydown/input 抢发，不限时序），
-          // 之后的重复一律吞掉；周期内没发过则窗口兜底补发一份
-          const preSent = cycleSent.includes(c);
-          suppress = { c, preSent, timer: setTimeout(flushSuppress, 40) };
-        }
-        setTimeout(() => { if (!composing) helperTa.value = ''; }, 60); // 防 textarea 累积
+        // 本周期 keydown 即时路径已原样发出过 → 不再补发；否则由窗口补发恰好一份
+        const preSent = cycleSent.includes(d);
+        suppress = { c: d, preSent, timer: setTimeout(flushSuppress, 40) };
+        cycleSent = [];
+        // 关键：同步清空 textarea。xterm 的 compositionend/_handleAnyTextareaChanges 两条
+        // 定时器路径都在 0ms 后读 textarea，取到空串即被自身跳过——重复上屏从源头消失，
+        // 正式那一份由上面的窗口结算发出。
+        helperTa.value = '';
       });
       if (imeDbg) {
         for (const t of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input', 'keydown', 'keyup', 'paste']) {
@@ -213,6 +215,11 @@
           if (suppress.preSent) return; // 已发过一份：吞掉重复
           suppress.preSent = true;      // 窗口内第一份放行
           invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(d)) });
+          return;
+        }
+        // 保险：窗口内等于上屏文本结尾片段的杂散发送（stale start 截取产物）也吞掉
+        if (d.length > 0 && d.length < suppress.c.length && suppress.c.endsWith(d)) {
+          if (imeDbg) console.log('[ime] swallow tail fragment', JSON.stringify(d));
           return;
         }
         flushSuppress(); // 其他按键先到：先结算上屏文本，保证顺序
