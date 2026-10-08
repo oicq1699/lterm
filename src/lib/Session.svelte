@@ -148,33 +148,47 @@
     // 窗口内等于本次上屏文本的 onData 全部拦下；窗口结束时若此前从未真正放过一份则补发一次，
     // 若已放过（keydown 路径抢先送达）则静默吞掉其余重复 —— 无论事件顺序都恰好上屏一份。
     const helperTa = term.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    let imeDbg = false;
+    try { imeDbg = localStorage.getItem('lterm-ime-debug') === '1'; } catch { /* ignore */ }
+    let composing = false;
+    let cycleSent: string[] = [];
     let suppress: { c: string; preSent: boolean; timer: ReturnType<typeof setTimeout> } | null = null;
-    let lastPassed: { d: string; t: number } | null = null;
     function flushSuppress() {
       if (!suppress) return;
       const s = suppress;
       suppress = null;
       clearTimeout(s.timer);
       if (!s.preSent && term && !dead) {
-        lastPassed = { d: s.c, t: Date.now() };
+        if (imeDbg) console.log('[ime] FLUSH emit', JSON.stringify(s.c));
         invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(s.c)) });
       }
     }
     if (helperTa) {
-      let composing = false;
-      helperTa.addEventListener('compositionstart', () => { composing = true; });
+      helperTa.addEventListener('compositionstart', () => { composing = true; cycleSent = []; });
       helperTa.addEventListener('compositionend', (e) => {
         composing = false;
         const c = ((e as CompositionEvent).data ?? '') || helperTa.value;
         if (suppress) flushSuppress(); // 新提交开始：先把上一笔结算
         if (c) {
-          // 仅认定“同一任务帧内抢先送达的那一份”为已发送（keydown 即时路径），
-          // 阈值取 15ms：正常连打同一个字的间隔不可能小于它
-          const preSent = !!lastPassed && lastPassed.d === c && Date.now() - lastPassed.t < 15;
+          // 本次组合周期内已经原样发出过一份（keydown/input 抢发，不限时序），
+          // 之后的重复一律吞掉；周期内没发过则窗口兜底补发一份
+          const preSent = cycleSent.includes(c);
           suppress = { c, preSent, timer: setTimeout(flushSuppress, 40) };
         }
         setTimeout(() => { if (!composing) helperTa.value = ''; }, 60); // 防 textarea 累积
       });
+      if (imeDbg) {
+        for (const t of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input', 'keydown', 'keyup', 'paste']) {
+          helperTa.addEventListener(t, (e: Event) => {
+            const ev = e as InputEvent & KeyboardEvent & CompositionEvent;
+            console.log('[ime]', t, JSON.stringify({
+              key: ev.key, keyCode: ev.keyCode, isComposing: ev.isComposing,
+              inputType: ev.inputType, data: typeof ev.data === 'string' ? ev.data : undefined,
+              ta: helperTa.value.slice(-10), ms: new Date().getMilliseconds(),
+            }));
+          }, true);
+        }
+      }
     }
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
     try {
@@ -192,17 +206,17 @@
 
     term.onData((d) => {
       if (dead) return;
+      if (imeDbg) console.log('[ime] onData', JSON.stringify(d), 'composing=', composing, 'sup=', suppress ? JSON.stringify(suppress.c) : null);
+      if (composing) cycleSent.push(d);
       if (suppress) {
         if (d === suppress.c) {
           if (suppress.preSent) return; // 已发过一份：吞掉重复
           suppress.preSent = true;      // 窗口内第一份放行
-          lastPassed = { d, t: Date.now() };
           invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(d)) });
           return;
         }
         flushSuppress(); // 其他按键先到：先结算上屏文本，保证顺序
       }
-      lastPassed = { d, t: Date.now() };
       invoke('write_input', { id: sessionId, dataBase64: bytesToB64(new TextEncoder().encode(d)) });
     });
     term.onSelectionChange(() => { if (prefCopyOnSelect) copySelection(); });
