@@ -6,9 +6,13 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: write   # 创建 Release 并上传产物所需
+
 jobs:
   build:
     strategy:
+      fail-fast: false   # 一个平台失败不牵连另一个
       matrix:
         os: [windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
