@@ -12,6 +12,8 @@ pub struct Settings {
     pub copy_on_select: bool,
     pub confirm_multi_line: bool,
     pub aside_hidden: bool,
+    /// 收起的分组文件夹名（空串 = 未分组）
+    pub collapsed_folders: Vec<String>,
 }
 
 impl Default for Settings {
@@ -22,6 +24,7 @@ impl Default for Settings {
             copy_on_select: true,
             confirm_multi_line: true,
             aside_hidden: false,
+            collapsed_folders: Vec::new(),
         }
     }
 }

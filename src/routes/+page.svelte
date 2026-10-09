@@ -30,7 +30,7 @@
   let noticeQueue: string[] = [];
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; collapsedFolders: string[] };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let fontSize = $state(14);
@@ -39,6 +39,7 @@
   let showSettings = $state(false);
   let showAside = $state(true);
   let settingsLoaded = $state(false);
+  let collapsedFolders = $state<string[]>([]);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -47,6 +48,7 @@
       await invoke('set_settings', { settings: {
         fontFamily, fontSize, copyOnSelect: prefCopyOnSelect,
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
+        collapsedFolders,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -78,6 +80,36 @@
         ? await invoke<Hit[]>('search_servers', { query })
         : servers.map((s) => ({ server: s, score: 0 }));
     }, 80);
+  }
+
+  type Section = { tag: string; label: string; items: Hit[] };
+  const byName = (a: Hit, b: Hit) => a.server.name.localeCompare(b.server.name, 'zh');
+  const groupNames = $derived.by(() => {
+    const set = new Set<string>();
+    for (const s of servers) if (s.group_tag) set.add(s.group_tag);
+    return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
+  });
+  const sections = $derived.by<Section[]>(() => {
+    const m = new Map<string, Hit[]>();
+    for (const h of hits) {
+      const t = h.server.group_tag ?? '';
+      let arr = m.get(t);
+      if (!arr) { arr = []; m.set(t, arr); }
+      arr.push(h);
+    }
+    const named = [...m.entries()].filter(([t]) => t !== '')
+      .sort((a, b) => a[0].localeCompare(b[0], 'zh'));
+    const rest = m.get('');
+    const secs = named.map(([t, items]) => ({ tag: t, label: t, items: items.sort(byName) }));
+    if (rest?.length) secs.push({ tag: '', label: '未分组', items: rest.sort(byName) });
+    return secs;
+  });
+  const searching = $derived(query.trim() !== '');
+  function toggleFolder(tag: string) {
+    collapsedFolders = collapsedFolders.includes(tag)
+      ? collapsedFolders.filter((t) => t !== tag)
+      : [...collapsedFolders, tag];
+    saveSettingsSoon();
   }
 
   async function save() {
@@ -231,6 +263,7 @@
       showAside = !s.asideHidden;
       prefCopyOnSelect = s.copyOnSelect;
       prefConfirmMultiLine = s.confirmMultiLine;
+      collapsedFolders = s.collapsedFolders ?? [];
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -313,6 +346,13 @@
         </div>
         <input placeholder="备注" bind:value={draft.remark} />
         <div class="row">
+          <input placeholder="分组（文件夹，留空为未分组）" list="grouplist" value={draft.group_tag ?? ''}
+                 onchange={(e) => { draft.group_tag = (e.target as HTMLInputElement).value.trim() || null; }} />
+          <datalist id="grouplist">
+            {#each groupNames as g (g)}<option value={g}></option>{/each}
+          </datalist>
+        </div>
+        <div class="row">
           <span class="lbl">跳转</span>
           <select class="jumpsel" value={draft.proxy_jump ?? ''}
                   onchange={(e) => { draft.proxy_jump = (e.target as HTMLSelectElement).value || null; }}>
@@ -345,18 +385,32 @@
       </form>
     {/if}
     <ul class="server-list">
-      {#each hits as hit (hit.server.id)}
-        <li>
-          <button class="server" ondblclick={() => connect(hit.server)}
-                  onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(hit.server); } }}
-                  title="双击连接">
-            <span class="name">{hit.server.name}</span>
-            <span class="meta">{hit.server.username}@{hit.server.host} · {authLabel[hit.server.auth_method]}</span>
-            {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
-          </button>
-          <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
-          <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
-        </li>
+      {#each sections as sec (sec.tag)}
+        {#if sec.tag !== '' || sections.length > 1}
+          <li class="folder-head">
+            <button class="folder" onclick={() => toggleFolder(sec.tag)}
+                    title={collapsedFolders.includes(sec.tag) && !searching ? '展开' : '收起'}>
+              <span class="fold">{collapsedFolders.includes(sec.tag) && !searching ? '▸' : '▾'}</span>
+              <span class="fname">{sec.label}</span>
+              <span class="fcount">{sec.items.length}</span>
+            </button>
+          </li>
+        {/if}
+        {#if searching || !collapsedFolders.includes(sec.tag)}
+          {#each sec.items as hit (hit.server.id)}
+            <li class="member">
+              <button class="server" ondblclick={() => connect(hit.server)}
+                      onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(hit.server); } }}
+                      title="双击连接">
+                <span class="name">{hit.server.name}</span>
+                <span class="meta">{hit.server.username}@{hit.server.host} · {authLabel[hit.server.auth_method]}</span>
+                {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
+              </button>
+              <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
+              <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
+            </li>
+          {/each}
+        {/if}
       {:else}
         <li class="empty">暂无服务器，点 ＋ 添加</li>
       {/each}
@@ -471,6 +525,13 @@
   .swatch { width: 16px; height: 16px; border-radius: 4px; align-self: center; border: 1px solid #555; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }
+  .folder-head { display: block; }
+  .folder { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: #1a1a1a; border: none; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; color: #8ab4f8; padding: 5px 10px; cursor: pointer; font-size: 12px; position: sticky; top: 0; z-index: 1; }
+  .folder:hover { background: #232323; }
+  .fold { width: 12px; color: #777; }
+  .fname { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fcount { color: #666; font-size: 11px; }
+  .member .server { padding-left: 22px; }
   .server { flex: 1; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }
   .name { font-weight: 600; }

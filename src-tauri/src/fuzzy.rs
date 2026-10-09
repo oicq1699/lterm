@@ -18,11 +18,13 @@ pub fn search_servers_impl(servers: &[ServerProfile], query: &str) -> Vec<Search
     let mut hits: Vec<SearchHit> = servers
         .iter()
         .filter_map(|s| {
+            let g = s.group_tag.as_deref().unwrap_or("");
             let fields = [
                 s.name.as_str(),
                 s.remark.as_str(),
                 s.username.as_str(),
                 s.host.as_str(),
+                g,
             ];
             let mut total: i64 = 0;
             for token in &tokens {
@@ -41,7 +43,8 @@ pub fn search_servers_impl(servers: &[ServerProfile], query: &str) -> Vec<Search
             })
         })
         .collect();
-    hits.sort_by_key(|h| -h.score);
+    // 相关度优先；同相关度按名称排序
+    hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.server.name.cmp(&b.server.name)));
     hits
 }
 
