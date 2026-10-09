@@ -40,12 +40,9 @@ jobs:
       - name: npm ci
         run: npm ci
 
-      - name: Build frontend
-        run: npm run build
-
-      - name: Build portable binary (no bundler)
-        run: cargo build --release
-        working-directory: src-tauri
+      # 必须走 tauri CLI：裸 cargo build 不会设置生产标记，产物会按 dev 模式去连 localhost:1420 而白屏
+      - name: Build portable binary (tauri CLI, no bundler)
+        run: npx tauri build --no-bundle
 
       - name: Package portable
         shell: bash
