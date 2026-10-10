@@ -16,6 +16,7 @@
   type Hop = { id: string; name: string; host: string; port: number; username: string; auth_method: 'password' | 'key' | 'agent' };
 
   let servers: Profile[] = $state([]);
+  let folders: string[] = $state([]);
   let hits: Hit[] = $state([]);
   let query = $state('');
   let showForm = $state(false);
@@ -69,6 +70,7 @@
 
   async function refresh() {
     servers = await invoke<Profile[]>('list_servers');
+    folders = await invoke<string[]>('list_folders');
     search();
   }
 
@@ -84,11 +86,10 @@
 
   type Section = { tag: string; label: string; items: Hit[] };
   const byName = (a: Hit, b: Hit) => a.server.name.localeCompare(b.server.name, 'zh');
-  const groupNames = $derived.by(() => {
-    const set = new Set<string>();
-    for (const s of servers) if (s.group_tag) set.add(s.group_tag);
-    return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
-  });
+  const groupNames = $derived(
+    [...new Set([...folders, ...servers.map((s) => s.group_tag).filter((t): t is string => !!t)])]
+      .sort((a, b) => a.localeCompare(b, 'zh'))
+  );
   const sections = $derived.by<Section[]>(() => {
     const m = new Map<string, Hit[]>();
     for (const h of hits) {
@@ -97,10 +98,12 @@
       if (!arr) { arr = []; m.set(t, arr); }
       arr.push(h);
     }
-    const named = [...m.entries()].filter(([t]) => t !== '')
-      .sort((a, b) => a[0].localeCompare(b[0], 'zh'));
+    // 已声明的文件夹即使为空也显示；搜索时只保留有命中项的
+    const tags = new Set<string>([...folders, ...m.keys()]);
+    const named = [...tags].filter((t) => t !== '' && (!query.trim() || m.has(t)))
+      .sort((a, b) => a.localeCompare(b, 'zh'));
+    const secs = named.map((t) => ({ tag: t, label: t, items: (m.get(t) ?? []).sort(byName) }));
     const rest = m.get('');
-    const secs = named.map(([t, items]) => ({ tag: t, label: t, items: items.sort(byName) }));
     if (rest?.length) secs.push({ tag: '', label: '未分组', items: rest.sort(byName) });
     return secs;
   });
@@ -110,6 +113,33 @@
       ? collapsedFolders.filter((t) => t !== tag)
       : [...collapsedFolders, tag];
     saveSettingsSoon();
+  }
+  async function newFolder() {
+    const name = prompt('新建文件夹名称')?.trim();
+    if (!name) return;
+    try {
+      await invoke('add_folder', { name });
+      await refresh();
+    } catch (e) { error = String(e); }
+  }
+  async function renameFolder(tag: string) {
+    const name = prompt('重命名文件夹', tag)?.trim();
+    if (!name || name === tag) return;
+    try {
+      await invoke('rename_folder', { old: tag, new: name });
+      collapsedFolders = collapsedFolders.map((t) => (t === tag ? name : t));
+      await refresh();
+    } catch (e) { error = String(e); }
+  }
+  async function deleteFolder(tag: string) {
+    const n = sections.find((s) => s.tag === tag)?.items.length ?? 0;
+    if (!confirm(n ? `删除文件夹「${tag}」？其中 ${n} 台服务器将退回「未分组」（服务器本身不删）`
+                   : `删除空文件夹「${tag}」？`)) return;
+    try {
+      await invoke('delete_folder', { name: tag });
+      collapsedFolders = collapsedFolders.filter((t) => t !== tag);
+      await refresh();
+    } catch (e) { error = String(e); }
   }
 
   async function save() {
@@ -324,6 +354,7 @@
     <div class="toolbar">
       <input class="search" placeholder="模糊搜索：名称 备注 用户 主机…" bind:value={query} oninput={search} />
       <button onclick={() => { showForm = !showForm; }} title="添加服务器">＋</button>
+      <button onclick={newFolder} title="新建文件夹">⊞</button>
       <button onclick={() => toggleAside(false)} title="隐藏列表 (Ctrl+B)">⟨</button>
     </div>
     {#if showForm}
@@ -392,8 +423,12 @@
                     title={collapsedFolders.includes(sec.tag) && !searching ? '展开' : '收起'}>
               <span class="fold">{collapsedFolders.includes(sec.tag) && !searching ? '▸' : '▾'}</span>
               <span class="fname">{sec.label}</span>
-              <span class="fcount">{sec.items.length}</span>
             </button>
+            <span class="fcount">{sec.items.length}</span>
+            {#if sec.tag !== ''}
+              <button class="icon foldact" onclick={() => renameFolder(sec.tag)} title="重命名文件夹">✎</button>
+              <button class="del foldact" onclick={() => deleteFolder(sec.tag)} title="删除文件夹">×</button>
+            {/if}
           </li>
         {/if}
         {#if searching || !collapsedFolders.includes(sec.tag)}
@@ -525,12 +560,14 @@
   .swatch { width: 16px; height: 16px; border-radius: 4px; align-self: center; border: 1px solid #555; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }
-  .folder-head { display: block; }
-  .folder { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: #1a1a1a; border: none; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; color: #8ab4f8; padding: 5px 10px; cursor: pointer; font-size: 12px; position: sticky; top: 0; z-index: 1; }
+  .folder-head { display: flex; align-items: stretch; position: sticky; top: 0; z-index: 1; }
+  .folder { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left; background: #1a1a1a; border: none; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; color: #8ab4f8; padding: 5px 10px; cursor: pointer; font-size: 12px; }
   .folder:hover { background: #232323; }
   .fold { width: 12px; color: #777; }
   .fname { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fcount { color: #666; font-size: 11px; }
+  .fcount { align-self: center; color: #666; font-size: 11px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; padding: 0 4px 0 2px; }
+  .foldact { opacity: 0; transition: opacity .12s; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; }
+  .folder-head:hover .foldact { opacity: 1; }
   .member .server { padding-left: 22px; }
   .server { flex: 1; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }
