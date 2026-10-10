@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
 # 为便携版 lterm 注册任务栏/启动器图标
 # 用法: ./install-icon.sh [lterm 二进制路径]
-#   不带参数时自动在同目录里找 lterm / lterm-linux-x64-portable
+#   不带参数时自动在同目录里找 lterm
 # 说明: Icon= 用绝对路径，不依赖图标主题查找（Cinnamon 找不到主题图标时会把
 #       StartupWMClass 匹配到的任务栏按钮渲染成无图标空壳）；同时仍写入 hicolor，
 #       供按名查找的场景兜底。
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN="${1:-}"
-if [ -z "$BIN" ]; then
-  for c in "$SCRIPT_DIR/lterm" "$SCRIPT_DIR/lterm-linux-x64-portable"; do
-    [ -x "$c" ] && BIN="$c" && break
-  done
-fi
+BIN="${1:-$SCRIPT_DIR/lterm}"
 [ -n "$BIN" ] || { echo "用法: ./install-icon.sh /path/to/lterm"; exit 1; }
 BIN="$(readlink -f "$BIN")"
 [ -x "$BIN" ] || { echo "找不到可执行文件: $BIN"; exit 1; }

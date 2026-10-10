@@ -47,15 +47,14 @@ jobs:
       - name: Package portable
         shell: bash
         run: |
-          mkdir -p out
+          mkdir -p out pkg
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp src-tauri/target/release/lterm.exe out/lterm-windows-x64-portable.exe
+            cp src-tauri/target/release/lterm.exe out/lterm.exe
           else
-            cp src-tauri/target/release/lterm out/lterm-linux-x64-portable
-            cp src-tauri/icons/icon.png out/icon.png
-            cp scripts/linux/install-icon.sh out/install-icon.sh
-            tar -czf out/lterm-linux-x64-portable.tar.gz -C out lterm-linux-x64-portable icon.png install-icon.sh
-            rm out/icon.png out/install-icon.sh
+            cp src-tauri/target/release/lterm pkg/lterm
+            cp src-tauri/icons/icon.png pkg/icon.png
+            cp scripts/linux/install-icon.sh pkg/install-icon.sh
+            tar -czf out/lterm-linux-x64-portable.tar.gz -C pkg lterm icon.png install-icon.sh
           fi
 
       - uses: actions/upload-artifact@v4
@@ -69,7 +68,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            out/lterm-windows-x64-portable.exe
+            out/lterm.exe
             out/lterm-linux-x64-portable.tar.gz
           fail_on_missing: true
         env:

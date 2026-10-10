@@ -2,9 +2,9 @@
 
 ## 本地构建
 
-- **每次改完代码，本地只构建 Linux 便携二进制**：`npm run tauri build -- --no-bundle`，产物 `src-tauri/target/release/lterm`。
+- **每次改完代码，本地只构建 Linux 便携二进制**：`npm run tauri build -- --no-bundle`，产物就留在 `src-tauri/target/release/lterm`，不要另存副本、不要改名。
 - 不在本地打 Windows 包、不生成任何安装包（deb/rpm/AppImage/msi）；Windows 产物一律交给 GitHub Actions。
-- 构建完把二进制复制一份到 `/root/workspace/lterm-linux-x64-portable`，供用户直接取用验证。
+- 产物文件名一律用 `lterm`（Linux）/ `lterm.exe`（Windows），不加 `-linux-x64-portable` 之类后缀；区分平台的只有 Linux 的 `.tar.gz` 包名。
 
 ## 发布
 
