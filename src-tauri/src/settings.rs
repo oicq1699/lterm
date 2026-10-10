@@ -12,6 +12,8 @@ pub struct Settings {
     pub copy_on_select: bool,
     pub confirm_multi_line: bool,
     pub aside_hidden: bool,
+    /// 右键弹出菜单（复制/粘贴/克隆）；关闭则维持"右键=复制选区否则粘贴"
+    pub context_menu: bool,
     /// 收起的分组文件夹名（空串 = 未分组）
     pub collapsed_folders: Vec<String>,
 }
@@ -24,6 +26,7 @@ impl Default for Settings {
             copy_on_select: true,
             confirm_multi_line: true,
             aside_hidden: false,
+            context_menu: true,
             collapsed_folders: Vec::new(),
         }
     }

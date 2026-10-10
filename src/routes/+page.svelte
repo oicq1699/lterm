@@ -31,9 +31,10 @@
   let noticeQueue: string[] = [];
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; collapsedFolders: string[] };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[] };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
+  let prefContextMenu = $state(true);
   let fontSize = $state(14);
   let fontFamily = $state('');
   let fontList = $state<string[] | null>(null);
@@ -49,6 +50,7 @@
       await invoke('set_settings', { settings: {
         fontFamily, fontSize, copyOnSelect: prefCopyOnSelect,
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
+        contextMenu: prefContextMenu,
         collapsedFolders,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
@@ -293,6 +295,7 @@
       showAside = !s.asideHidden;
       prefCopyOnSelect = s.copyOnSelect;
       prefConfirmMultiLine = s.confirmMultiLine;
+      prefContextMenu = s.contextMenu;
       collapsedFolders = s.collapsedFolders ?? [];
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
@@ -460,7 +463,7 @@
         <div class="welcome">
           <h2>lterm</h2>
           <p>左侧添加服务器，双击连接。支持 ssh-agent / 密钥 / 密码认证。</p>
-          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · Ctrl+Shift+C/V 复制/粘贴 · Ctrl+W 关闭标签 · 右键 复制/粘贴</p>
+          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · Ctrl+Shift+C/V 复制/粘贴 · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
         </div>
       {/if}
       {#each tabs as t, i (t.sid)}
@@ -472,6 +475,8 @@
                  {fontSize}
                  {prefCopyOnSelect}
                  {prefConfirmMultiLine}
+                 prefContextMenu={prefContextMenu}
+                 onClone={() => activeTab && connect(activeTab.profile)}
                  onClosed={() => onTabClosed(t.sid)}
                  onResize={(cols, rows) => { if (t.alive) invoke('resize', { id: t.sid, cols, rows }); }}
                  registerFit={(fn) => fitFns.set(t.sid, fn)}
@@ -499,6 +504,7 @@
           <div class="srow">
             <label><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
             <label><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
+            <label><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
           </div>
           <div class="srow">
             <span class="lbl">字号</span>

@@ -7,7 +7,7 @@
   import { SearchAddon } from '@xterm/addon-search';
   import { Unicode11Addon } from '@xterm/addon-unicode11';
   import { WebglAddon } from '@xterm/addon-webgl';
-  import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+  import { readText } from '@tauri-apps/plugin-clipboard-manager';
   import '@xterm/xterm/css/xterm.css';
   import SftpBrowser from './SftpBrowser.svelte';
 
@@ -20,14 +20,16 @@
     fontSize: number;
     prefCopyOnSelect: boolean;
     prefConfirmMultiLine: boolean;
+    prefContextMenu: boolean;
     onClosed: () => void;
+    onClone?: () => void;
     onResize: (cols: number, rows: number) => void;
     registerFit: (fn: () => void) => void;
     registerApi: (sid: string, api: { writeLine: (t: string) => void }) => void;
   };
   let {
     sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
-    onClosed, onResize, registerFit, registerApi,
+    prefContextMenu, onClosed, onClone, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
@@ -62,7 +64,9 @@
 
   async function copySelection() {
     const sel = term?.getSelection();
-    if (sel) await writeText(sel);
+    if (!sel) return;
+    // 走 Rust 侧通道：webview 的 navigator.clipboard 在失焦/无权限时会静默失败
+    try { await invoke('clipboard_write', { text: sel }); } catch { /* 忽略 */ }
   }
 
   async function pasteClipboard() {
@@ -77,8 +81,23 @@
     term.paste(text);
   }
 
-  function doFit() {
-    fit?.fit();
+  // ---- 右键菜单 ----
+  const CTX_W = 152, CTX_H = 106;
+  let ctx = $state<{ x: number; y: number } | null>(null);
+  let ctxEl: HTMLDivElement | undefined = $state();
+  let hasSel = $state(false);
+  function openCtx(e: MouseEvent) {
+    ctx = {
+      x: Math.max(4, Math.min(e.clientX, window.innerWidth - CTX_W)),
+      y: Math.max(4, Math.min(e.clientY, window.innerHeight - CTX_H)),
+    };
+  }
+  function closeCtx() { ctx = null; }
+  function onWinPointerDown(e: PointerEvent) {
+    if (ctx && ctxEl && !ctxEl.contains(e.target as Node)) closeCtx();
+  }
+  function onWinKeydown(e: KeyboardEvent) { if (e.key === 'Escape') closeCtx(); }
+  function doFit() {    fit?.fit();
     if (term && !dead) onResize(term.cols, term.rows);
   }
 
@@ -246,10 +265,17 @@
       if (imeDbg) console.log('[ime] onData', JSON.stringify(d), 'compActive=', compActive);
       sendText(d);
     });
-    term.onSelectionChange(() => { if (prefCopyOnSelect) copySelection(); });
+    term.onSelectionChange(() => {
+      hasSel = !!term?.hasSelection();
+      if (prefCopyOnSelect) copySelection();
+    });
 
+    // 捕获阶段：xterm 处理 Escape 时会 stopPropagation，冒泡阶段的 window 监听收不到
+    window.addEventListener('keydown', onWinKeydown, true);
     termHost!.addEventListener('contextmenu', (e) => {
       e.preventDefault();
+      const ev = e as MouseEvent;
+      if (prefContextMenu) { openCtx(ev); return; }
       if (term?.hasSelection()) copySelection();
       else pasteClipboard();
     });
@@ -313,11 +339,13 @@
   }
 
   onDestroy(() => {
+    window.removeEventListener('keydown', onWinKeydown, true);
     for (const u of unlistenAll) u();
     term?.dispose();
   });
 </script>
 
+<svelte:window onpointerdown={onWinPointerDown} />
 <div class="term-wrap" style:display={active ? 'flex' : 'none'}>
   <div class="term-col">
     {#if showSearch}
@@ -377,10 +405,24 @@
     <button class="ptool" class:open={showSftp} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
     <button class="ptool" class:open={showFwd} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
   </div>
+  {#if ctx}
+    <div class="ctxmenu" bind:this={ctxEl} role="menu" style:left={`${ctx.x}px`} style:top={`${ctx.y}px`}>
+      <button role="menuitem" class:off={!hasSel} onclick={() => { if (hasSel) void copySelection(); closeCtx(); }}>复制</button>
+      <button role="menuitem" onclick={() => { void pasteClipboard(); closeCtx(); }}>粘贴</button>
+      {#if onClone}
+        <button role="menuitem" onclick={() => { onClone(); closeCtx(); }}>克隆此连接</button>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
   .term-wrap { height: 100%; flex: 1; min-width: 0; position: relative; }
+  .ctxmenu { position: fixed; z-index: 60; min-width: 136px; background: #262626; border: 1px solid #454545; border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 1px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55); }
+  .ctxmenu button { display: block; width: 100%; text-align: left; background: none; border: none; color: #ddd; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .ctxmenu button:hover { background: #363636; }
+  .ctxmenu button.off { color: #666; cursor: default; }
+  .ctxmenu button.off:hover { background: none; }
   .term-col { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; }
   .term { flex: 1; padding: 6px; min-height: 0; }
   .findbar { display: flex; gap: 4px; padding: 4px 8px; background: #222; border-bottom: 1px solid #333; }
