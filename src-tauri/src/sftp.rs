@@ -589,6 +589,17 @@ pub fn local_rename(from: String, to: String) -> Result<(), String> {
     std::fs::rename(&from, &to).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn local_mkdir(path: String) -> Result<(), String> {
+    std::fs::create_dir(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            format!("{path} 已存在")
+        } else {
+            e.to_string()
+        }
+    })
+}
+
 /// 在独立 SSH 连接上建立 SFTP：与终端会话共用 sid，互不干扰。
 #[tauri::command]
 pub async fn sftp_open(
@@ -760,3 +771,26 @@ pub fn sftp_cancel(registry: State<'_, Mutex<SftpRegistry>>, sid: String, transf
     tx.send(SftpJob::Cancel { transfer_id }).map_err(|_| "worker 已退出".to_string())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::local_mkdir;
+
+    #[test]
+    fn local_mkdir_creates_and_rejects_dupes() {
+        let root = std::env::temp_dir().join(format!("lterm-mkdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let one = root.join("新建目录").to_string_lossy().into_owned();
+        local_mkdir(one.clone()).unwrap();
+        assert!(std::fs::metadata(&one).unwrap().is_dir());
+
+        let dup = local_mkdir(one).unwrap_err();
+        assert!(dup.contains("已存在"), "重名应给出可读错误，实得 {dup}");
+
+        // 父目录不存在时不应静默建多级
+        assert!(local_mkdir(root.join("a/b/c").to_string_lossy().into_owned()).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+}

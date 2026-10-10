@@ -195,12 +195,31 @@
     try { await invoke('sftp_cancel', { sid, transferId: t.id }); } catch (e) { error = String(e); }
   }
 
+  function dirNamePrompt(): string | null {
+    const name = prompt('新建目录名：')?.trim();
+    if (!name) return null;
+    if (name === '.' || name === '..' || /[\\/]/.test(name)) {
+      error = '目录名不能包含路径分隔符，也不能是 . 或 ..';
+      return null;
+    }
+    return name;
+  }
+
   async function mkdirRemote() {
-    const name = prompt('新建目录名：');
+    const name = dirNamePrompt();
     if (!name) return;
     try {
       await invoke('sftp_mkdir', { sid, path: joinPosix(remotePath, name) });
       await loadRemote();
+    } catch (e) { error = String(e); }
+  }
+
+  async function mkdirLocal() {
+    const name = dirNamePrompt();
+    if (!name) return;
+    try {
+      await invoke('local_mkdir', { path: joinLocal(localPath, name) });
+      await loadLocal();
     } catch (e) { error = String(e); }
   }
 
@@ -285,6 +304,7 @@
       </ul>
       <div class="ops">
         <button onclick={uploadSelected} title="上传选中到远端当前目录">上传 →</button>
+        <button onclick={mkdirLocal}>新建目录</button>
         <button onclick={() => del('local')}>删除</button>
         <button onclick={() => rename('local')}>重命名</button>
       </div>

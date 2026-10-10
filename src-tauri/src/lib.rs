@@ -125,6 +125,7 @@ pub fn run() {
             sftp::local_list,
             sftp::local_remove,
             sftp::local_rename,
+            sftp::local_mkdir,
             sftp::local_home,
             dirstate::get_dir_state,
             dirstate::set_dir_state,
