@@ -15,3 +15,7 @@ scripts/testkeys/
 scripts/sshd_test/
 scripts/agent.env
 scripts/agent.pid
+
+# 本地真实服务器配置（勿入库）
+/servers.json
+/data/
