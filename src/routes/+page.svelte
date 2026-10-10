@@ -7,7 +7,7 @@
   type Profile = {
     id: string; name: string; host: string; port: number; username: string;
     auth_method: 'password' | 'key' | 'agent'; key_path: string | null;
-    remark: string; group_tag: string | null; color: string | null;
+    remark: string; group_tag: string | null;
     proxy_jump: string | null;
     created_at: number; updated_at: number;
   };
@@ -64,7 +64,7 @@
 
   function emptyDraft(): Profile {
     return { id: '', name: '', host: '', port: 22, username: 'root',
-      auth_method: 'agent', key_path: null, remark: '', group_tag: null, color: null,
+      auth_method: 'agent', key_path: null, remark: '', group_tag: null,
       proxy_jump: null, created_at: 0, updated_at: 0 };
   }
 
@@ -394,22 +394,6 @@
           </select>
         </div>
         <div class="row">
-          <span class="lbl">配色</span>
-          <select class="colorsel" value={draft.color ?? ''}
-                  onchange={(e) => { draft.color = (e.target as HTMLSelectElement).value || null; }}>
-            <option value="">默认</option>
-            <option value="#e57373">红</option>
-            <option value="#f0a060">橙</option>
-            <option value="#e6c060">黄</option>
-            <option value="#4caf50">绿</option>
-            <option value="#4fd6be">青</option>
-            <option value="#4c8bf5">蓝</option>
-            <option value="#b39ddb">紫</option>
-            <option value="#f48fb1">粉</option>
-          </select>
-          {#if draft.color}<span class="swatch" style:background={draft.color}></span>{/if}
-        </div>
-        <div class="row">
           <button type="submit">保存</button>
           <button type="button" onclick={() => { showForm = false; draft = emptyDraft(); }}>取消</button>
         </div>
@@ -456,7 +440,6 @@
     <div class="tabbar">
       {#each tabs as t, i}
         <div class="tab" class:active={i === activeIdx} role="tab" tabindex={0} aria-selected={i === activeIdx}
-             style={t.profile.color ? `box-shadow: inset 0 3px 0 0 ${t.profile.color};` : ''}
              onclick={() => { activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); }}
              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); } }}>
           <span class="dot" class:connected={t.alive} class:closed={!t.alive}></span>
@@ -484,7 +467,6 @@
         <Session sessionId={t.sid}
                  profileId={t.profile.id}
                  sessionPassword={t.password}
-                 profileColor={t.profile.color}
                  {fontFamily}
                  active={i === activeIdx}
                  {fontSize}
@@ -555,9 +537,7 @@
   .server-form option { background: #2a2a2a; color: #eee; }
   .port { width: 70px; }
   .server-form .lbl { color: #999; font-size: 12px; align-self: center; flex-shrink: 0; }
-  .colorsel { flex: 1; }
   .jumpsel { flex: 1; }
-  .swatch { width: 16px; height: 16px; border-radius: 4px; align-self: center; border: 1px solid #555; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }
   .folder-head { display: flex; align-items: stretch; position: sticky; top: 0; z-index: 1; }
@@ -581,7 +561,7 @@
   .tabbar { display: flex; background: #181818; border-bottom: 1px solid #2a2a2a; overflow-x: auto; }
   .tabbar::-webkit-scrollbar { display: none; }
   .tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: none; border: none; border-right: 1px solid #262626; color: #999; cursor: pointer; font-size: 13px; white-space: nowrap; }
-  .tab.active { background: #101010; color: #eee; }
+  .tab.active { background: #101010; color: #eee; box-shadow: inset 0 3px 0 0 #4fd6be; }
   .tab .close { border: none; background: none; color: inherit; padding: 0 2px; border-radius: 3px; cursor: pointer; line-height: 1; }
   .tab .close:hover { background: #444; color: #fff; }
   .newtab { color: #6a9fb5; }

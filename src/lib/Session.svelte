@@ -16,7 +16,6 @@
     profileId: string;
     sessionPassword: string | null;
     fontFamily: string;
-    profileColor: string | null;
     active: boolean;
     fontSize: number;
     prefCopyOnSelect: boolean;
@@ -27,7 +26,7 @@
     registerApi: (sid: string, api: { writeLine: (t: string) => void }) => void;
   };
   let {
-    sessionId, profileId, sessionPassword, fontFamily, profileColor, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
+    sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
     onClosed, onResize, registerFit, registerApi,
   }: Props = $props();
 
@@ -321,7 +320,6 @@
 
 <div class="term-wrap" style:display={active ? 'flex' : 'none'}>
   <div class="term-col">
-    {#if profileColor}<div class="accent" style:background={profileColor}></div>{/if}
     {#if showSearch}
       <div class="findbar">
         <input placeholder="搜索输出内容…" bind:value={searchTerm}
@@ -384,7 +382,6 @@
 <style>
   .term-wrap { height: 100%; flex: 1; min-width: 0; position: relative; }
   .term-col { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; }
-  .accent { height: 3px; flex-shrink: 0; }
   .term { flex: 1; padding: 6px; min-height: 0; }
   .findbar { display: flex; gap: 4px; padding: 4px 8px; background: #222; border-bottom: 1px solid #333; }
   .findbar input { flex: 1; padding: 4px 8px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }

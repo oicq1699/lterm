@@ -47,7 +47,6 @@ async fn connect_real() -> client::Handle<AcceptAll> {
         key_path: Some(key),
         remark: String::new(),
         group_tag: None,
-        color: None,
         proxy_jump: None,
         created_at: 0,
         updated_at: 0,

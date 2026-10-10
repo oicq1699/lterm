@@ -26,8 +26,6 @@ pub struct ServerProfile {
     pub remark: String,
     #[serde(default)]
     pub group_tag: Option<String>,
-    #[serde(default)]
-    pub color: Option<String>,
     /// ProxyJump：经由另一台已保存服务器（profile id）跳转
     #[serde(default)]
     pub proxy_jump: Option<String>,
@@ -242,7 +240,6 @@ mod tests {
             key_path: None,
             remark: String::new(),
             group_tag: group.map(Into::into),
-            color: None,
             proxy_jump: None,
             created_at: 0,
             updated_at: 0,
