@@ -38,6 +38,8 @@
   let termHost: HTMLDivElement | undefined = $state();
   let showSearch = $state(false);
   let showSftp = $state(false);
+  let sftpWide = $state(false);
+  const sftpW = $derived(sftpWide ? 980 : 580);
   let searchTerm = $state('');
   let dead = $state(false);
 
@@ -336,16 +338,17 @@
     <div class="term" bind:this={termHost}></div>
   </div>
   {#if showSftp}
-    <div class="sftp-side">
+    <div class="sftp-side" class:wide={sftpWide}>
       <div class="sftp-head">
         <span>SFTP 文件</span>
+        <button onclick={() => sftpWide = !sftpWide} title="显示/隐藏权限与所有者两列">{sftpWide ? '精简' : '详情'}</button>
         <button onclick={() => showSftp = false} aria-label="关闭文件面板">✕</button>
       </div>
-      <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} />
+      <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} wide={sftpWide} />
     </div>
   {/if}
   {#if showFwd}
-    <div class="fwd-side" style:right={showSftp ? '580px' : '0'}>
+    <div class="fwd-side" style:right={showSftp ? `${sftpW}px` : '0'}>
       <div class="sftp-head">
         <span>端口转发（本会话）</span>
         <button onclick={() => showFwd = false} aria-label="关闭转发面板">✕</button>
@@ -372,7 +375,7 @@
       </ul>
     </div>
   {/if}
-  <div class="tool-stack" style:right={`${8 + (showSftp ? 580 : 0) + (showFwd ? 360 : 0)}px`}>
+  <div class="tool-stack" style:right={`${8 + (showSftp ? sftpW : 0) + (showFwd ? 360 : 0)}px`}>
     <button class="ptool" class:open={showSftp} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
     <button class="ptool" class:open={showFwd} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
   </div>
@@ -387,7 +390,9 @@
   .findbar input { flex: 1; padding: 4px 8px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .findbar button { padding: 2px 10px; }
   .sftp-side { position: absolute; right: 0; top: 0; bottom: 0; width: 580px; min-width: 420px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 20; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
-  .sftp-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
+  .sftp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
+  .sftp-head span { flex: 1; }
+  .sftp-side.wide { width: 980px; }
   .sftp-head button { background: none; border: none; color: #999; cursor: pointer; }
   .ptool { background: #222c; border: 1px solid #3a3a3a; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 3px 9px; font-size: 13px; }
   .ptool.open { color: #101010; background: #8ab4f8; }

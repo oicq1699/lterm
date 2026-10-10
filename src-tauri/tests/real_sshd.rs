@@ -245,3 +245,56 @@ async fn real_pty_roundtrip() {
     .unwrap_or(false);
     assert!(got, "真实 sshd PTY 回显失败");
 }
+
+/// 权限位往返：上传带 x 位的文件 → 远端应保留 x；下载回来 → 本地仍是 0755
+#[cfg(unix)]
+#[tokio::test]
+async fn sftp_preserves_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    if enabled().is_none() {
+        return;
+    }
+    let mut handle = connect_real().await;
+    let sftp = open_sftp(&mut handle).await;
+
+    let stamp = std::process::id();
+    let src = std::env::temp_dir().join(format!("lterm-mode-{stamp}-src"));
+    let back = std::env::temp_dir().join(format!("lterm-mode-{stamp}-back"));
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&back);
+    std::fs::write(&src, "#!/bin/sh\necho hi\n").unwrap();
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let home = sftp.canonicalize(".").await.unwrap();
+    let remote = format!("{home}/lterm_mode_test");
+    let _ = remote_remove(&sftp, &remote, false).await;
+
+    upload_core(&sftp, &src.to_string_lossy(), &remote, None, &mut |_, _| {})
+        .await
+        .unwrap();
+    let rmeta = sftp.metadata(&remote).await.unwrap();
+    let rmode = rmeta.permissions.unwrap_or(0) & 0o777;
+    assert_eq!(rmode & 0o111, 0o111, "上传后远端应保留可执行位，实得 {rmode:#o}");
+
+    download_core(&sftp, &remote, &back.to_string_lossy(), None, &mut |_, _| {})
+        .await
+        .unwrap();
+    let lmode = std::fs::metadata(&back).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(lmode, 0o755, "下载回来权限位应与源文件一致");
+
+    // 两列的数据源：远端列表带 mode，本地列表带 mode + 所有者
+    let listed = remote_list(&sftp, &home).await.unwrap();
+    let ren = listed.iter().find(|e| e.name == "lterm_mode_test").expect("远端列表应含该文件");
+    assert_eq!(ren.mode.unwrap_or(0) & 0o111, 0o111, "remote_list 应带出可执行位");
+    let locals = lterm_lib::sftp::local_list(std::env::temp_dir().to_string_lossy().into_owned())
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path == src.to_string_lossy())
+        .expect("本地列表应含该文件");
+    assert_eq!(locals.mode, Some(0o755), "local_list 应带出权限位");
+    assert!(locals.user.as_deref().is_some_and(|u| !u.is_empty()), "local_list 应带出所有者");
+
+    let _ = remote_remove(&sftp, &remote, false).await;
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&back);
+}

@@ -7,6 +7,73 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
+// ---------- 权限位 / 所有者 ----------
+
+#[cfg(unix)]
+mod unix_perm {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::sync::OnceLock;
+
+    fn passwd_map() -> &'static std::collections::HashMap<u32, String> {
+        static PASSWD: OnceLock<std::collections::HashMap<u32, String>> = OnceLock::new();
+        PASSWD.get_or_init(|| {
+            let mut m = std::collections::HashMap::new();
+            if let Ok(raw) = std::fs::read_to_string("/etc/passwd") {
+                for line in raw.lines() {
+                    let mut it = line.split(':');
+                    if let (Some(name), Some(uid)) = (it.next(), it.next().and_then(|s| s.parse::<u32>().ok())) {
+                        m.insert(uid, name.to_string());
+                    }
+                }
+            }
+            m
+        })
+    }
+
+    fn group_map() -> &'static std::collections::HashMap<u32, String> {
+        static GROUP: OnceLock<std::collections::HashMap<u32, String>> = OnceLock::new();
+        GROUP.get_or_init(|| {
+            let mut m = std::collections::HashMap::new();
+            if let Ok(raw) = std::fs::read_to_string("/etc/group") {
+                for line in raw.lines() {
+                    let mut it = line.split(':');
+                    if let (Some(name), Some(gid)) = (it.next(), it.next().and_then(|s| s.parse::<u32>().ok())) {
+                        m.insert(gid, name.to_string());
+                    }
+                }
+            }
+            m
+        })
+    }
+
+    pub fn mode_of(md: &std::fs::Metadata) -> Option<u32> {
+        Some(md.permissions().mode() & 0o7777)
+    }
+
+    /// 仅用于本机文件；远端属主名由服务端 attrs 的 user/group 字段给出
+    pub fn owner_of(md: &std::fs::Metadata) -> Option<String> {
+        let uid = md.uid();
+        Some(passwd_map().get(&uid).cloned().unwrap_or_else(|| uid.to_string()))
+    }
+
+    pub fn group_of(md: &std::fs::Metadata) -> Option<String> {
+        let gid = md.gid();
+        Some(group_map().get(&gid).cloned().unwrap_or_else(|| gid.to_string()))
+    }
+
+    pub fn apply(path: &str, mode: u32) {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777));
+    }
+}
+
+#[cfg(not(unix))]
+mod unix_perm {
+    pub fn mode_of(_md: &std::fs::Metadata) -> Option<u32> { None }
+    pub fn owner_of(_md: &std::fs::Metadata) -> Option<String> { None }
+    pub fn group_of(_md: &std::fs::Metadata) -> Option<String> { None }
+    pub fn apply(_path: &str, _mode: u32) {}
+}
+
 // ---------- 会话侧 worker ----------
 
 pub enum SftpJob {
@@ -60,6 +127,11 @@ pub struct SftpEntry {
     pub is_dir: bool,
     pub modified: u64,
     pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    /// 服务端若下发了属主名则优先用它，否则前端回退显示 uid
+    pub user: Option<String>,
+    pub group: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -179,6 +251,10 @@ pub async fn remote_list(sftp: &SftpSession, path: &str) -> Result<Vec<SftpEntry
             is_dir: meta.is_dir(),
             modified: meta.mtime.unwrap_or(0) as u64,
             mode: meta.permissions.map(|p| p & 0o7777),
+            uid: meta.uid,
+            gid: meta.gid,
+            user: meta.user,
+            group: meta.group,
         });
     }
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -324,6 +400,16 @@ pub async fn upload_core(
     }
     rf.flush().await.map_err(|e| e.to_string())?;
     rf.close().await.map_err(|e| e.to_string())?;
+    // 把本地权限位带到远端（sftp create 默认按 umask 建为 0644，会丢掉 x 位）
+    if let Ok(md) = tokio::fs::metadata(local).await {
+        if let Some(mode) = unix_perm::mode_of(&md) {
+            let attrs = russh_sftp::client::fs::Metadata {
+                permissions: Some(mode),
+                ..Default::default()
+            };
+            let _ = sftp.set_metadata(remote, attrs).await;
+        }
+    }
     progress(done, total);
     Ok(())
 }
@@ -455,6 +541,10 @@ pub async fn download_core(
         }
     }
     lf.flush().await.map_err(|e| e.to_string())?;
+    // 保留远端权限位（否则下载下来的可执行文件会变成非可执行）
+    if let Some(mode) = meta.permissions {
+        unix_perm::apply(local, mode);
+    }
     progress(done, total);
     Ok(())
 }
@@ -556,6 +646,9 @@ pub struct LocalEntry {
     pub size: u64,
     pub is_dir: bool,
     pub modified: u64,
+    pub mode: Option<u32>,
+    pub user: Option<String>,
+    pub group: Option<String>,
 }
 
 #[tauri::command]
@@ -575,6 +668,9 @@ pub fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
+            mode: md.as_ref().and_then(unix_perm::mode_of),
+            user: md.as_ref().and_then(unix_perm::owner_of),
+            group: md.as_ref().and_then(unix_perm::group_of),
         });
     }
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));

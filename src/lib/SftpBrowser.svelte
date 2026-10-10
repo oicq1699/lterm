@@ -3,10 +3,14 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-  type Props = { sid: string; profileId: string; password: string | null };
-  let { sid, profileId, password }: Props = $props();
+  type Props = { sid: string; profileId: string; password: string | null; wide?: boolean };
+  let { sid, profileId, password, wide = false }: Props = $props();
 
-  type Entry = { name: string; path: string; size: number; is_dir: boolean; modified: number; mode?: number | null };
+  type Entry = {
+    name: string; path: string; size: number; is_dir: boolean; modified: number;
+    mode?: number | null; uid?: number | null; gid?: number | null;
+    user?: string | null; group?: string | null;
+  };
   type Transfer = { id: string; label: string; dir: 'up' | 'down'; done: number; total: number; state: 'run' | 'ok' | 'err'; error?: string };
 
   let ready = $state(false);
@@ -24,6 +28,18 @@
     : n >= 1048576 ? (n / 1048576).toFixed(1) + 'M'
     : n >= 1024 ? (n / 1024).toFixed(0) + 'K' : String(n);
   const fmtDate = (t: number) => t ? new Date(t * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+
+  // ls 风格的 rwx 九位；setuid/sticky 等特定位在 title 的八进制里体现
+  const fmtRwx = (mode: number | null | undefined, isDir: boolean) => {
+    if (mode == null) return '';
+    const bits = 'rwxrwxrwx';
+    let s = '';
+    for (let i = 0; i < 9; i++) s += (mode >> (8 - i)) & 1 ? bits[i] : '-';
+    return (isDir ? 'd' : '-') + s;
+  };
+  const fmtOctal = (mode: number | null | undefined) => (mode == null ? '' : '0' + (mode & 0o7777).toString(8).padStart(3, '0'));
+  const fmtOwner = (en: Entry) => en.user ?? (en.uid != null ? String(en.uid) : '');
+  const fmtGroup = (en: Entry) => en.group ?? (en.gid != null ? String(en.gid) : '');
 
   function localSep(p: string) { return /^[a-zA-Z]:|\\/.test(p) ? '\\' : '/'; }
   function joinLocal(dir: string, name: string) {
@@ -247,6 +263,9 @@
                onkeydown={(e) => e.key === 'Enter' && loadLocal((e.target as HTMLInputElement).value)} />
         <button onclick={() => loadLocal()} title="刷新">⟳</button>
       </div>
+      {#if wide}
+        <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
+      {/if}
       <ul role="listbox" aria-label="文件列表">
         {#each localEntries as en (en.path)}
           <li class:selected={localSel.has(en.path)} role="option" aria-selected={localSel.has(en.path)} tabindex={0}
@@ -254,6 +273,10 @@
               onkeydown={(e) => e.key === 'Enter' && entryDbl('local', en)}
               ondblclick={() => entryDbl('local', en)}>
             <span class="ico">{en.is_dir ? '📁' : '📄'}</span>
+            {#if wide}
+              <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, en.is_dir)}</span>
+              <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
+            {/if}
             <span class="fname">{en.name}</span>
             <span class="fsize">{en.is_dir ? '' : fmtSize(en.size)}</span>
             <span class="fdate">{fmtDate(en.modified)}</span>
@@ -274,6 +297,9 @@
                onkeydown={(e) => e.key === 'Enter' && loadRemote((e.target as HTMLInputElement).value)} />
         <button onclick={() => loadRemote()} title="刷新">⟳</button>
       </div>
+      {#if wide}
+        <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
+      {/if}
       <ul role="listbox" aria-label="文件列表">
         {#each remoteEntries as en (en.path)}
           <li class:selected={remoteSel.has(en.path)} role="option" aria-selected={remoteSel.has(en.path)} tabindex={0}
@@ -281,6 +307,10 @@
               onkeydown={(e) => e.key === 'Enter' && entryDbl('remote', en)}
               ondblclick={() => entryDbl('remote', en)}>
             <span class="ico">{en.is_dir ? '📁' : '📄'}</span>
+            {#if wide}
+              <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, en.is_dir)}</span>
+              <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
+            {/if}
             <span class="fname">{en.name}</span>
             <span class="fsize">{en.is_dir ? '' : fmtSize(en.size)}</span>
             <span class="fdate">{fmtDate(en.modified)}</span>
@@ -338,6 +368,11 @@
   .ico { width: 14px; }
   .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fsize { width: 52px; text-align: right; color: #888; }
+  .fperm { width: 78px; color: #86b386; font-family: monospace; flex-shrink: 0; }
+  .fown { width: 88px; color: #8a93a6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+  .colhead { display: flex; gap: 6px; padding: 2px 8px; color: #666; font-size: 11px; border-bottom: 1px solid #262626; }
+  .colhead span { flex-shrink: 0; }
+  .colhead .ch-name { flex: 1; }
   .fdate { width: 76px; text-align: right; color: #666; }
   .empty { color: #666; padding: 8px; }
   .ops { display: flex; gap: 4px; padding: 4px; border-top: 1px solid #2a2a2a; flex-wrap: wrap; }
