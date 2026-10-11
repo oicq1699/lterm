@@ -163,17 +163,24 @@
 
     term.open(termHost!);
 
-    // IME 接管 v7：WebView2 不发 compositionstart（日志证实），且 xterm 与目标元素上的监听
-    // 先于同元素后注册者执行——所以全部拦截必须挂在父节点(termHost)捕获阶段才能先于 xterm。
-    // 组合周期识别：compositionstart 或 keydown(keyCode=229) 均置为激活；
-    // compositionend.data 权威上屏，恰好发一次；提交后 150ms 内屏蔽本周期残留按键。
+    // IME 接管（仅 Linux/WebKitGTK+fcitx）：fcitx 在后续候选提交时不发 compositionstart，
+    // 且 xterm 与目标元素上的监听先于同元素后注册者执行——所以拦截必须挂在父节点(termHost)
+    // 捕获阶段才能先于 xterm。compositionend.data 权威上屏，恰好发一次。
+    //
+    // Windows/WebView2 不启用接管：实测接管逻辑会让中文输入法卡死输入（切回英文也打不进），
+    // 而 xterm 自带的 CompositionHelper 在 WebView2 下工作正常。
     const helperTa = term.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    const imeTakeover = !/Windows/i.test(navigator.userAgent);
     let imeDbg = false;
     try { imeDbg = localStorage.getItem('lterm-ime-debug') === '1'; } catch { /* ignore */ }
     let compActive = false;
     let compBuffer = '';
     let lastCommitAt = 0;
-    const inCompWindow = () => compActive || (Date.now() - lastCommitAt < 150);
+    let last229At = 0;
+    // 229 只作**有时效**的证据（每次 229 刷新），绝不永久置位：
+    // 否则一次无配对的 229（如切输入法时的 Shift）就会把后续所有按键吞掉。
+    const inCompWindow = () =>
+      compActive || (Date.now() - last229At < 250) || (Date.now() - lastCommitAt < 150);
     let sendQ: Promise<void> = Promise.resolve();
     function sendText(s: string) {
       if (!term || dead) { if (imeDbg) console.warn('[ime] sendText skipped: term?', !!term, 'dead=', dead); return; }
@@ -188,7 +195,7 @@
         if (imeDbg) console.log('[ime] write ok', bytes.length, 'bytes in', Math.max(1, Math.ceil(bytes.length / CHUNK)), 'chunks');
       }).catch((e) => { if (imeDbg) console.warn('[ime] write FAIL', String(e)); });
     }
-    if (helperTa) {
+    if (helperTa && imeTakeover) {
       const dbgEv = (name: string, e: Event) => {
         if (!imeDbg) return;
         const ev = e as InputEvent & KeyboardEvent & CompositionEvent;
@@ -227,7 +234,7 @@
       }, true);
       termHost!.addEventListener('keydown', (e) => {
         const ev = e as KeyboardEvent;
-        if (ev.keyCode === 229) compActive = true; // WebView2: 无 compositionstart，用 229 认定周期
+        if (ev.keyCode === 229) last229At = Date.now(); // 无 compositionstart 时的周期证据，仅 250ms 内有效
         if (inCompWindow()) { dbgEv('keydown(blocked)', ev); ev.stopPropagation(); ev.preventDefault(); }
       }, true);
       termHost!.addEventListener('keypress', (e) => {
@@ -245,6 +252,8 @@
           ev.stopPropagation();
         }
       }, true);
+      // 失焦即视为组合周期结束，避免 compositionend 缺失时状态卡死
+      helperTa.addEventListener('blur', () => { compActive = false; compBuffer = ''; }, true);
     }
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
     try {
