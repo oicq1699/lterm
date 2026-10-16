@@ -20,6 +20,49 @@ pub enum Protocol {
     Rdp,
 }
 
+/// 服务端安全协议档位。老服务器（2003/XP）只认 RDP 原生加密且不支持协议协商，
+/// 新服务器默认走 NLA；选错的表现是连不上而不是报错，所以做成显式选项。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RdpSec {
+    /// 交给客户端自动协商（Win10/11、2012R2 及以上）
+    #[default]
+    Auto,
+    /// 强制 NLA（域账户、2008R2 及以上）
+    Nla,
+    /// 仅 TLS
+    Tls,
+    /// 老式 RDP 加密，无 NLA（2003/XP）
+    Legacy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RdpOptions {
+    pub sec: RdpSec,
+    /// 本地目录共享到远程（Linux: /drive；Windows: 重定向全部本地驱动器）
+    pub share_dir: Option<String>,
+    pub clipboard: bool,
+    pub fullscreen: bool,
+}
+
+impl Default for RdpOptions {
+    fn default() -> Self {
+        Self {
+            sec: RdpSec::default(),
+            share_dir: None,
+            clipboard: true,
+            fullscreen: false,
+        }
+    }
+}
+
+impl RdpOptions {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerProfile {
     pub id: String,
@@ -32,6 +75,8 @@ pub struct ServerProfile {
     /// 缺省 = ssh，兼容没有该字段的老 servers.json
     #[serde(default)]
     pub protocol: Protocol,
+    #[serde(default, skip_serializing_if = "RdpOptions::is_default")]
+    pub rdp: RdpOptions,
     #[serde(default)]
     pub key_path: Option<String>,
     #[serde(default)]
@@ -250,6 +295,7 @@ mod tests {
             username: "root".into(),
             auth_method: AuthMethod::Agent,
             protocol: Protocol::Ssh,
+            rdp: Default::default(),
             key_path: None,
             remark: String::new(),
             group_tag: group.map(Into::into),

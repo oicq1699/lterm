@@ -7,8 +7,11 @@
 //! 命令行/`.rdp` 传密码的途径，除非把密码写进 Windows 凭据管理器，这里不做。
 //!
 //! ProxyJump 暂不支持：mstsc 没有跳板机概念，xfreerdp 走的是 RDP 网关而非 SSH。
+//!
+//! 服务端差异（2003/2008/Win10 的 NLA、TLS、协议协商各不相同）由 profile.rdp.sec 档位
+//! 控制；剪贴板与目录共享走 RDP 自带的通道（xfreerdp `/drive:`、mstsc `drivestoredirect`）。
 
-use crate::store::{Protocol, ServerProfile, ServerStore};
+use crate::store::{Protocol, RdpSec, ServerProfile, ServerStore};
 use std::sync::Mutex;
 use tauri::State;
 
@@ -41,7 +44,39 @@ fn launch(p: &ServerProfile, password: Option<String>) -> Result<String, String>
     }
     let host = safe_host(&p.host)?;
     let user = safe_line(&p.username)?;
-    platform_launch(p, &host, &user, password)
+    let share = match p.rdp.share_dir.as_deref().map(str::trim) {
+        Some(raw) if !raw.is_empty() => Some(resolve_share(raw)?),
+        _ => None,
+    };
+    platform_launch(p, &host, &user, share.as_deref(), password)
+}
+
+/// 共享目录：必须是本地真实存在的目录。`~` 按 HOME 展开（界面里手输最顺手的就是 ~/docs）。
+fn resolve_share(raw: &str) -> Result<String, String> {
+    if raw.chars().any(|c| c.is_control() || c == ',') {
+        return Err(format!("共享目录名含非法字符：{raw}"));
+    }
+    let expanded = match raw.strip_prefix("~") {
+        Some(tail) => match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            Some(home) => {
+                let tail = tail.trim_start_matches(['/', '\\']);
+                if tail.is_empty() {
+                    std::path::PathBuf::from(home)
+                } else {
+                    std::path::PathBuf::from(home).join(tail)
+                }
+            }
+            None => std::path::PathBuf::from(raw),
+        },
+        None => std::path::PathBuf::from(raw),
+    };
+    if !expanded.is_absolute() {
+        return Err(format!("共享目录必须写绝对路径（或 ~ 开头）：{raw}"));
+    }
+    if !expanded.is_dir() {
+        return Err(format!("共享目录不存在或不是目录：{}", expanded.display()));
+    }
+    Ok(expanded.display().to_string())
 }
 
 /// 主机名/IP 白名单字符：挡住换行（.rdp 文件里可以塞 `alternate shell:s:` 这类指令）
@@ -73,10 +108,11 @@ fn platform_launch(
     p: &ServerProfile,
     host: &str,
     user: &str,
+    share: Option<&str>,
     password: Option<String>,
 ) -> Result<String, String> {
     let _ = password;
-    let text = rdp_file_text(p, host, user);
+    let text = rdp_file_text(p, host, user, share);
     let path = std::env::temp_dir().join(format!("lterm-{}.rdp", safe_rdp_id(&p.id)));
     std::fs::write(&path, text).map_err(|e| format!("写入 .rdp 临时文件失败: {e}"))?;
     std::process::Command::new("mstsc.exe")
@@ -91,6 +127,7 @@ fn platform_launch(
     p: &ServerProfile,
     host: &str,
     user: &str,
+    share: Option<&str>,
     password: Option<String>,
 ) -> Result<String, String> {
     use std::io::{Read, Write};
@@ -100,7 +137,7 @@ fn platform_launch(
         .iter()
         .find_map(|b| which(b))
         .ok_or_else(|| INSTALL_HINT.to_string())?;
-    let args = xfreerdp_args(p, host, user);
+    let args = xfreerdp_args(p, host, user, share);
     let mut child = Command::new(&bin)
         .args(&args)
         .stdin(Stdio::piped())
@@ -146,6 +183,7 @@ fn platform_launch(
     _p: &ServerProfile,
     _host: &str,
     _user: &str,
+    _share: Option<&str>,
     _password: Option<String>,
 ) -> Result<String, String> {
     Err("当前平台没有可用的 RDP 客户端".into())
@@ -158,12 +196,28 @@ fn safe_rdp_id(id: &str) -> String {
         .collect()
 }
 
-/// 只有换行会被 mstsc 当成新指令，端口写在同一行即可。
+/// mstsc 的设置项。换行会被当成新指令，所以前面已经挡掉控制字符。
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn rdp_file_text(p: &ServerProfile, host: &str, user: &str) -> String {
+fn rdp_file_text(p: &ServerProfile, host: &str, user: &str, share: Option<&str>) -> String {
     let mut s = format!("full address:s:{}\r\n", address(p, host));
     if !user.is_empty() {
         s.push_str(&format!("username:s:{user}\r\n"));
+    }
+    if p.rdp.fullscreen {
+        s.push_str("screen mode id:i:2\r\n"); // 2=全屏，1=窗口
+    }
+    // mstsc 只能整盘重定向（会话里表现为 \\tsclient\C），没有 xfreerdp 那种单目录共享
+    if share.is_some() {
+        s.push_str("drivestoredirect:s:*\r\n");
+    }
+    if !p.rdp.clipboard {
+        s.push_str("redirectclipboard:i:0\r\n");
+    }
+    match p.rdp.sec {
+        // 2003/XP：关掉 CredSSP(NLA)，否则握手直接被服务端拒
+        RdpSec::Legacy => s.push_str("enablecredsspsupport:i:0\r\n"),
+        RdpSec::Auto => {}
+        RdpSec::Nla | RdpSec::Tls => s.push_str("enablecredsspsupport:i:1\r\n"),
     }
     s
 }
@@ -178,7 +232,7 @@ fn address(p: &ServerProfile, host: &str) -> String {
 }
 
 #[cfg(unix)]
-fn xfreerdp_args(p: &ServerProfile, host: &str, user: &str) -> Vec<String> {
+fn xfreerdp_args(p: &ServerProfile, host: &str, user: &str, share: Option<&str>) -> Vec<String> {
     let mut a = vec![
         format!("/v:{}", address(p, host)),
         // 凭据走管道：/p: 会明文出现在 /proc/<pid>/cmdline
@@ -187,13 +241,30 @@ fn xfreerdp_args(p: &ServerProfile, host: &str, user: &str) -> Vec<String> {
     if !user.is_empty() {
         a.push(format!("/u:{user}"));
     }
-    a.extend([
-        // 首次接受并记住证书指纹，换了再拒绝；xfreerdp 2.x 与 3.x 都支持
-        "/cert:tofu".into(),
-        "/dynamic-resolution".into(),
-        "+clipboard".into(),
-        "/network:auto".into(),
-    ]);
+    match p.rdp.sec {
+        RdpSec::Auto => {}
+        RdpSec::Nla => a.push("/sec:nla".into()),
+        RdpSec::Tls => a.push("/sec:tls".into()),
+        // 2003/XP：只有 RDP 原生加密，且不支持协议安全协商（带着 nego 连反而失败）
+        RdpSec::Legacy => {
+            a.push("/sec:rdp".into());
+            a.push("-nego".into());
+        }
+    }
+    // 首次接受并记住证书指纹，换了再拒绝；xfreerdp 2.x 与 3.x 都支持
+    a.push("/cert:tofu".into());
+    if p.rdp.fullscreen {
+        a.push("/f".into());
+    }
+    if let Some(dir) = share {
+        a.push(format!("/drive:lterm,{dir}"));
+    }
+    a.push(if p.rdp.clipboard { "+clipboard" } else { "-clipboard" }.into());
+    if p.rdp.sec != RdpSec::Legacy {
+        // 动态分辨率是 Win8 / 2012 起的扩展，老服务端不认
+        a.push("/dynamic-resolution".into());
+    }
+    a.push("/network:auto".into());
     a
 }
 
@@ -219,6 +290,7 @@ mod tests {
             username: "win\\user".into(),
             auth_method: AuthMethod::Password,
             protocol: Protocol::Rdp,
+            rdp: Default::default(),
             key_path: None,
             remark: String::new(),
             group_tag: None,
@@ -245,12 +317,33 @@ mod tests {
 
     #[test]
     fn rdp_file_has_no_injectable_directives() {
-        let text = rdp_file_text(&rdp("10.0.0.1", 3389), "10.0.0.1", "corp\\alice");
+        let text = rdp_file_text(&rdp("10.0.0.1", 3389), "10.0.0.1", "corp\\alice", None);
         assert_eq!(
             text,
             "full address:s:10.0.0.1:3389\r\nusername:s:corp\\alice\r\n"
         );
         assert_eq!(text.lines().count(), 2);
+
+        let mut p = rdp("10.0.0.1", 3389);
+        p.rdp.fullscreen = true;
+        p.rdp.clipboard = false;
+        p.rdp.sec = RdpSec::Legacy;
+        let text = rdp_file_text(&p, "10.0.0.1", "a", Some("/home/u/docs"));
+        assert!(text.contains("screen mode id:i:2\r\n"));
+        assert!(text.contains("redirectclipboard:i:0\r\n"));
+        assert!(text.contains("drivestoredirect:s:*\r\n"));
+        assert!(text.contains("enablecredsspsupport:i:0\r\n"));
+        assert!(!text.contains("/home/u/docs"), "mstsc 只整盘重定向，不写具体路径");
+    }
+
+    #[test]
+    fn share_dir_must_be_an_existing_absolute_path() {
+        assert!(resolve_share("docs").unwrap_err().contains("绝对路径"));
+        assert!(resolve_share("/definitely/not/here").unwrap_err().contains("不存在"));
+        assert!(resolve_share("/tmp,a;rm").is_err(), "逗号会破坏 /drive 的参数分隔");
+        let home = std::env::var_os("HOME").expect("HOME");
+        let expanded = resolve_share("~").unwrap();
+        assert_eq!(expanded, std::path::PathBuf::from(home).display().to_string());
     }
 
     #[test]
@@ -262,10 +355,49 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn xfreerdp_args_never_carry_the_password() {
-        let args = xfreerdp_args(&rdp("10.0.0.9", 3389), "10.0.0.9", "u");
+        let args = xfreerdp_args(&rdp("10.0.0.9", 3389), "10.0.0.9", "u", None);
         assert!(args.iter().all(|a| !a.starts_with("/p:")), "密码不能进 argv");
         assert!(args.iter().any(|a| a == "/from-stdin"));
         assert_eq!(args[0], "/v:10.0.0.9:3389");
+        assert!(args.iter().any(|a| a == "+clipboard"));
+        assert!(args.iter().any(|a| a == "/dynamic-resolution"));
+    }
+
+    /// 老服务端（2003/2008）要关掉协商和动态分辨率，否则连不上
+    #[cfg(unix)]
+    #[test]
+    fn legacy_servers_get_a_much_plainer_handshake() {
+        let mut p = rdp("10.0.0.9", 3389);
+        p.rdp.sec = RdpSec::Legacy;
+        let args = xfreerdp_args(&p, "10.0.0.9", "u", Some("/home/u/docs"));
+        assert!(args.iter().any(|a| a == "/sec:rdp"));
+        assert!(args.iter().any(|a| a == "-nego"));
+        assert!(!args.iter().any(|a| a == "/dynamic-resolution"));
+        assert!(args.iter().any(|a| a == "/drive:lterm,/home/u/docs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn security_preset_maps_to_client_flags() {
+        let mut p = rdp("h", 3389);
+        for (sec, flag) in [
+            (RdpSec::Auto, None),
+            (RdpSec::Nla, Some("/sec:nla")),
+            (RdpSec::Tls, Some("/sec:tls")),
+        ] {
+            p.rdp.sec = sec;
+            let args = xfreerdp_args(&p, "h", "u", None);
+            let has = args.iter().any(|a| a.starts_with("/sec:"));
+            assert_eq!(flag.is_some(), has, "{sec:?} → {args:?}");
+            if let Some(f) = flag {
+                assert!(args.iter().any(|a| a == f), "{sec:?}");
+            }
+        }
+        p.rdp.clipboard = false;
+        p.rdp.fullscreen = true;
+        let args = xfreerdp_args(&p, "h", "u", None);
+        assert!(args.iter().any(|a| a == "-clipboard"));
+        assert!(args.iter().any(|a| a == "/f"));
     }
 
     #[cfg(unix)]

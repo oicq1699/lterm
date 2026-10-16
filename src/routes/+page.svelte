@@ -4,9 +4,14 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import Session from '$lib/Session.svelte';
 
+  type RdpOptions = {
+    sec: 'auto' | 'nla' | 'tls' | 'legacy';
+    shareDir: string | null; clipboard: boolean; fullscreen: boolean;
+  };
   type Profile = {
     id: string; name: string; host: string; port: number; username: string;
-    auth_method: 'password' | 'key' | 'agent'; protocol: 'ssh' | 'rdp'; key_path: string | null;
+    auth_method: 'password' | 'key' | 'agent'; protocol: 'ssh' | 'rdp'; rdp: RdpOptions;
+    key_path: string | null;
     remark: string; group_tag: string | null;
     proxy_jump: string | null;
     created_at: number; updated_at: number;
@@ -72,14 +77,23 @@
 
   const activeTab = $derived(activeIdx >= 0 && activeIdx < tabs.length ? tabs[activeIdx] : null);
 
+  function emptyRdp(): RdpOptions {
+    return { sec: 'auto', shareDir: null, clipboard: true, fullscreen: false };
+  }
+
+  // Rust 端对默认值不落盘（skip_serializing_if），这里补齐
+  function norm(p: Profile): Profile {
+    return { ...p, rdp: { ...emptyRdp(), ...(p.rdp ?? {}) } };
+  }
+
   function emptyDraft(): Profile {
     return { id: '', name: '', host: '', port: 22, username: 'root',
-      auth_method: 'agent', protocol: 'ssh', key_path: null, remark: '', group_tag: null,
+      auth_method: 'agent', protocol: 'ssh', rdp: emptyRdp(), key_path: null, remark: '', group_tag: null,
       proxy_jump: null, created_at: 0, updated_at: 0 };
   }
 
   async function refresh() {
-    servers = await invoke<Profile[]>('list_servers');
+    servers = (await invoke<Profile[]>('list_servers')).map(norm);
     folders = await invoke<string[]>('list_folders');
     search();
   }
@@ -89,7 +103,7 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       hits = query.trim()
-        ? await invoke<Hit[]>('search_servers', { query })
+        ? (await invoke<Hit[]>('search_servers', { query })).map((h) => ({ ...h, server: norm(h.server) }))
         : servers.map((s) => ({ server: s, score: 0 }));
     }, 80);
   }
@@ -99,6 +113,9 @@
   const groupNames = $derived(
     [...new Set([...folders, ...servers.map((s) => s.group_tag).filter((t): t is string => !!t)])]
       .sort((a, b) => a.localeCompare(b, 'zh'))
+  );
+  const shareDirHistory = $derived(
+    [...new Set(servers.map((s) => s.rdp.shareDir).filter((d): d is string => !!d))]
   );
   const sections = $derived.by<Section[]>(() => {
     const m = new Map<string, Hit[]>();
@@ -426,7 +443,26 @@
           <input placeholder="私钥路径" bind:value={draft.key_path} />
         {/if}
         {#if draft.protocol === 'rdp'}
-          <p class="hint">RDP 由系统客户端承载：Windows 用自带 mstsc（密码在其弹窗里输入），Linux 用 xfreerdp（需 apt install freerdp3-x11）。桌面在独立窗口打开，不占标签页，暂不支持跳板机。</p>
+          <div class="row">
+            <span class="lbl">兼容</span>
+            <select bind:value={draft.rdp.sec}>
+              <option value="auto">自动协商（Win10/11、2012R2+）</option>
+              <option value="nla">强制 NLA（域账户、2008R2+）</option>
+              <option value="tls">仅 TLS</option>
+              <option value="legacy">老式 RDP（2003/XP，无 NLA）</option>
+            </select>
+          </div>
+          <input placeholder="共享到远程的本地目录（留空=不共享）" list="rdpsharelist"
+                 value={draft.rdp.shareDir ?? ''}
+                 onchange={(e) => { draft.rdp.shareDir = (e.target as HTMLInputElement).value.trim() || null; }} />
+          <datalist id="rdpsharelist">
+            {#each shareDirHistory as d (d)}<option value={d}></option>{/each}
+          </datalist>
+          <div class="row">
+            <label class="chk"><input type="checkbox" bind:checked={draft.rdp.clipboard} /> 剪贴板共享</label>
+            <label class="chk"><input type="checkbox" bind:checked={draft.rdp.fullscreen} /> 全屏</label>
+          </div>
+          <p class="hint">桌面在独立窗口打开，不占标签页，暂不支持跳板机。Linux 用 xfreerdp（apt install freerdp3-x11），目录共享是精确到这一个目录；Windows 用自带 mstsc，密码在其弹窗里输入，目录共享是整个本地驱动器（远程里是 \\tsclient\C）。</p>
         {/if}
         <input placeholder="备注" bind:value={draft.remark} />
         <div class="row">
@@ -597,6 +633,7 @@
   .port { width: 70px; }
   .server-form .lbl { color: #999; font-size: 12px; align-self: center; flex-shrink: 0; }
   .server-form .hint { margin: 0; font-size: 11px; color: #777; line-height: 1.45; }
+  .server-form .chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #bbb; }
   .jumpsel { flex: 1; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }

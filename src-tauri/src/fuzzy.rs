@@ -87,6 +87,7 @@ mod tests {
             username: "root".into(),
             auth_method: AuthMethod::Agent,
             protocol: Default::default(),
+            rdp: Default::default(),
             key_path: None,
             remark: String::new(),
             group_tag: None,
