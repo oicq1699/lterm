@@ -44,6 +44,9 @@ pub fn resolve_chain(store: &ServerStore, target: &ServerProfile) -> Result<Vec<
             .find(|s| s.id == jid)
             .cloned()
             .ok_or_else(|| format!("ProxyJump 目标服务器不存在（{jid}）"))?;
+        if jump.protocol != crate::store::Protocol::Ssh {
+            return Err(format!("{} 是 RDP 主机，不能作为 SSH 跳板", jump.name));
+        }
         cur = jump;
     }
     chain.reverse();
@@ -139,6 +142,7 @@ mod tests {
             port: 22,
             username: "u".into(),
             auth_method: AuthMethod::Agent,
+            protocol: Default::default(),
             key_path: None,
             remark: String::new(),
             group_tag: None,

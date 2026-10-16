@@ -11,6 +11,15 @@ pub enum AuthMethod {
     Agent,
 }
 
+/// RDP 由系统客户端承载（Windows=mstsc，Linux=xfreerdp），不走 russh。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    #[default]
+    Ssh,
+    Rdp,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerProfile {
     pub id: String,
@@ -20,6 +29,9 @@ pub struct ServerProfile {
     pub port: u16,
     pub username: String,
     pub auth_method: AuthMethod,
+    /// 缺省 = ssh，兼容没有该字段的老 servers.json
+    #[serde(default)]
+    pub protocol: Protocol,
     #[serde(default)]
     pub key_path: Option<String>,
     #[serde(default)]
@@ -237,6 +249,7 @@ mod tests {
             port: 22,
             username: "root".into(),
             auth_method: AuthMethod::Agent,
+            protocol: Protocol::Ssh,
             key_path: None,
             remark: String::new(),
             group_tag: group.map(Into::into),
@@ -291,5 +304,25 @@ mod tests {
         st.upsert(profile("c", "gamma", Some("临时组"))).unwrap();
         assert!(st.folders.contains(&"临时组".to_string()), "用到新分组时应自动登记文件夹");
         std::fs::remove_dir_all(&st.path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn legacy_json_without_protocol_field_loads_as_ssh() {
+        let dir = std::env::temp_dir().join(format!("lterm-store-test-proto-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("servers.json"),
+            r#"{"version":1,"servers":[{"id":"x","name":"旧机器","host":"10.0.0.2","port":22,"username":"root","auth_method":"agent"}]}"#,
+        )
+        .unwrap();
+        let mut st = ServerStore::load(&dir).unwrap();
+        assert_eq!(st.servers[0].protocol, Protocol::Ssh, "老配置缺 protocol 字段应按 ssh 加载");
+
+        st.servers[0].protocol = Protocol::Rdp;
+        st.servers[0].port = 3389;
+        st.save().unwrap();
+        let re = ServerStore::load(&dir).unwrap();
+        assert_eq!(re.servers[0].protocol, Protocol::Rdp);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

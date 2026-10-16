@@ -160,6 +160,10 @@ pub async fn connect(
         .cloned()
         .ok_or_else(|| format!("未找到服务器 {profile_id}"))?;
 
+    if profile.protocol == crate::store::Protocol::Rdp {
+        return Err(format!("{} 是 RDP 主机，请用「打开远程桌面」连接", profile.name));
+    }
+
     let id: String = uuid::Uuid::new_v4().to_string();
 
     let mut passwords = proxy_passwords.unwrap_or_default();

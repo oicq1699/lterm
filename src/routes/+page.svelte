@@ -6,7 +6,7 @@
 
   type Profile = {
     id: string; name: string; host: string; port: number; username: string;
-    auth_method: 'password' | 'key' | 'agent'; key_path: string | null;
+    auth_method: 'password' | 'key' | 'agent'; protocol: 'ssh' | 'rdp'; key_path: string | null;
     remark: string; group_tag: string | null;
     proxy_jump: string | null;
     created_at: number; updated_at: number;
@@ -29,6 +29,14 @@
   let fitFns = new Map<string, () => void>();
   let tabApis = new Map<string, { writeLine: (t: string) => void }>();
   let noticeQueue: string[] = [];
+  // RDP 由外部窗口承载，没有终端可写，结果用状态栏短暂提示
+  let flash = $state('');
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  function showFlash(msg: string) {
+    flash = msg;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { flash = ''; }, 8000);
+  }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
   type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[] };
@@ -66,7 +74,7 @@
 
   function emptyDraft(): Profile {
     return { id: '', name: '', host: '', port: 22, username: 'root',
-      auth_method: 'agent', key_path: null, remark: '', group_tag: null,
+      auth_method: 'agent', protocol: 'ssh', key_path: null, remark: '', group_tag: null,
       proxy_jump: null, created_at: 0, updated_at: 0 };
   }
 
@@ -158,6 +166,17 @@
     showForm = true;
   }
 
+  function onProtocolChange(v: string) {
+    draft.protocol = v === 'rdp' ? 'rdp' : 'ssh';
+    if (draft.protocol === 'rdp') {
+      if (draft.port === 22) draft.port = 3389;
+      draft.auth_method = 'password'; // 密钥/agent 对 RDP 无意义
+      draft.proxy_jump = null;
+    } else if (draft.port === 3389) {
+      draft.port = 22;
+    }
+  }
+
   async function remove(id: string) {
     if (!confirm('删除该服务器？')) return;
     try {
@@ -177,6 +196,7 @@
 
   async function connect(p: Profile) {
     error = '';
+    if (p.protocol === 'rdp') { await connectRdp(p); return; }
     let chain: Hop[];
     try {
       chain = await invoke<Hop[]>('get_proxy_chain', { profileId: p.id });
@@ -196,6 +216,24 @@
       tabs = [...tabs, { sid, profile: p, alive: true, password: pwMap[p.id] ?? null }];
       activeIdx = tabs.length - 1;
       flushNotices();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  const isWindowsUA = /Windows/i.test(navigator.userAgent);
+
+  async function connectRdp(p: Profile) {
+    // Windows 上 mstsc 自己弹凭据框（微软没有提供命令行传密码的途径），这里不多问一次；
+    // Linux 上把密码经管道交给 xfreerdp 的 /from-stdin，不进 argv，也不写盘。
+    let pw: string | null = null;
+    if (!isWindowsUA) {
+      const typed = prompt(`密码 (${p.name} · ${p.username}@${p.host}:${p.port})`);
+      if (typed === null) return;
+      pw = typed;
+    }
+    try {
+      showFlash(await invoke<string>('open_rdp', { profileId: p.id, password: pw }));
     } catch (e) {
       error = String(e);
     }
@@ -323,6 +361,7 @@
   }
 
   onDestroy(() => {
+    clearTimeout(flashTimer);
     window.removeEventListener('resize', onWinResize);
     window.removeEventListener('lterm-zoom', onZoom);
     window.removeEventListener('keydown', onWindowKeydown);
@@ -369,15 +408,26 @@
         </div>
         <input placeholder="用户名" bind:value={draft.username} required />
         <div class="row">
-          <select bind:value={draft.auth_method}>
-            <option value="agent">ssh-agent</option>
-            <option value="key">私钥</option>
-            <option value="password">密码</option>
+          <select value={draft.protocol} onchange={(e) => onProtocolChange((e.target as HTMLSelectElement).value)}>
+            <option value="ssh">SSH</option>
+            <option value="rdp">RDP 远程桌面</option>
           </select>
-          {#if draft.auth_method === 'key'}
-            <input placeholder="私钥路径" bind:value={draft.key_path} />
+          {#if draft.protocol === 'rdp'}
+            <span class="lbl">外部客户端</span>
+          {:else}
+            <select bind:value={draft.auth_method}>
+              <option value="agent">ssh-agent</option>
+              <option value="key">私钥</option>
+              <option value="password">密码</option>
+            </select>
           {/if}
         </div>
+        {#if draft.auth_method === 'key' && draft.protocol === 'ssh'}
+          <input placeholder="私钥路径" bind:value={draft.key_path} />
+        {/if}
+        {#if draft.protocol === 'rdp'}
+          <p class="hint">RDP 由系统客户端承载：Windows 用自带 mstsc（密码在其弹窗里输入），Linux 用 xfreerdp（需 apt install freerdp3-x11）。桌面在独立窗口打开，不占标签页，暂不支持跳板机。</p>
+        {/if}
         <input placeholder="备注" bind:value={draft.remark} />
         <div class="row">
           <input placeholder="分组（文件夹，留空为未分组）" list="grouplist" value={draft.group_tag ?? ''}
@@ -386,16 +436,18 @@
             {#each groupNames as g (g)}<option value={g}></option>{/each}
           </datalist>
         </div>
-        <div class="row">
-          <span class="lbl">跳转</span>
-          <select class="jumpsel" value={draft.proxy_jump ?? ''}
-                  onchange={(e) => { draft.proxy_jump = (e.target as HTMLSelectElement).value || null; }}>
-            <option value="">直连</option>
-            {#each servers.filter((s) => s.id !== draft.id) as s (s.id)}
-              <option value={s.id}>经 {s.name}（{s.username}@{s.host}）</option>
-            {/each}
-          </select>
-        </div>
+        {#if draft.protocol === 'ssh'}
+          <div class="row">
+            <span class="lbl">跳转</span>
+            <select class="jumpsel" value={draft.proxy_jump ?? ''}
+                    onchange={(e) => { draft.proxy_jump = (e.target as HTMLSelectElement).value || null; }}>
+              <option value="">直连</option>
+              {#each servers.filter((s) => s.id !== draft.id && s.protocol !== 'rdp') as s (s.id)}
+                <option value={s.id}>经 {s.name}（{s.username}@{s.host}）</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
         <div class="row">
           <button type="submit">保存</button>
           <button type="button" onclick={() => { showForm = false; draft = emptyDraft(); }}>取消</button>
@@ -425,7 +477,7 @@
                       onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(hit.server); } }}
                       title="双击连接">
                 <span class="name">{hit.server.name}</span>
-                <span class="meta">{hit.server.username}@{hit.server.host} · {authLabel[hit.server.auth_method]}</span>
+                <span class="meta">{hit.server.username}@{hit.server.host} · {hit.server.protocol === 'rdp' ? 'RDP' : authLabel[hit.server.auth_method]}</span>
                 {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
               </button>
               <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
@@ -462,7 +514,7 @@
       {#if tabs.length === 0}
         <div class="welcome">
           <h2>lterm</h2>
-          <p>左侧添加服务器，双击连接。支持 ssh-agent / 密钥 / 密码认证。</p>
+          <p>左侧添加服务器，双击连接。支持 ssh-agent / 密钥 / 密码认证，RDP 主机交给系统远程桌面客户端。</p>
           <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · Ctrl+Shift+C/V 复制/粘贴 · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
         </div>
       {/if}
@@ -496,6 +548,7 @@
       {:else}
         <span class="dot"></span>无活动会话
       {/if}
+      {#if flash}<span class="flash">{flash}</span>{/if}
       <span class="spacer"></span>
       <button class="gear" onclick={() => toggleAside(!showAside)} title="显示/隐藏服务器列表 (Ctrl+B)">☰ 列表</button>
       <button class="gear" onclick={openSettings} title="终端设置">⚙ 设置</button>
@@ -543,6 +596,7 @@
   .server-form option { background: #2a2a2a; color: #eee; }
   .port { width: 70px; }
   .server-form .lbl { color: #999; font-size: 12px; align-self: center; flex-shrink: 0; }
+  .server-form .hint { margin: 0; font-size: 11px; color: #777; line-height: 1.45; }
   .jumpsel { flex: 1; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }
@@ -580,6 +634,7 @@
   .dismiss { background: none; border: none; color: #f0a0a0; cursor: pointer; }
   .status { padding: 4px 10px; font-size: 12px; color: #999; border-top: 1px solid #333; display: flex; gap: 10px; align-items: center; position: relative; }
   .status button { padding: 2px 10px; }
+  .status .flash { color: #4fd6be; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .spacer { flex: 1; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #555; }
   .dot.connected { background: #4caf50; }

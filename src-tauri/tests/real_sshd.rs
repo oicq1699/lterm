@@ -44,6 +44,7 @@ async fn connect_real() -> client::Handle<AcceptAll> {
         port,
         username: user.clone(),
         auth_method: AuthMethod::Key,
+        protocol: Default::default(),
         key_path: Some(key),
         remark: String::new(),
         group_tag: None,

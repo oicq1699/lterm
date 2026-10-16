@@ -5,6 +5,7 @@ pub mod fonts;
 pub mod fuzzy;
 pub mod hostkeys;
 pub mod jump;
+pub mod rdp;
 pub mod session;
 pub mod settings;
 pub mod sftp;
@@ -133,6 +134,7 @@ pub fn run() {
             settings::set_settings,
             clipboard::clipboard_write,
             jump::get_proxy_chain,
+            rdp::open_rdp,
             toggle_devtools,
         ])
         .run(tauri::generate_context!())
