@@ -44,6 +44,8 @@ pub struct RdpOptions {
     pub share_dir: Option<String>,
     pub clipboard: bool,
     pub fullscreen: bool,
+    /// 忽略服务端证书校验（自签/换证的机器用），默认关闭走 TOFU 首次信任
+    pub ignore_cert: bool,
 }
 
 impl Default for RdpOptions {
@@ -53,6 +55,7 @@ impl Default for RdpOptions {
             share_dir: None,
             clipboard: true,
             fullscreen: false,
+            ignore_cert: false,
         }
     }
 }

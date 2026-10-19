@@ -217,6 +217,10 @@ fn rdp_file_text(p: &ServerProfile, host: &str, user: &str, share: Option<&str>)
     if !p.rdp.clipboard {
         s.push_str("redirectclipboard:i:0\r\n");
     }
+    if p.rdp.ignore_cert {
+        // 0 = 服务端身份无法验证时也继续连接（等价 xfreerdp 的 /cert:ignore）
+        s.push_str("authentication level:i:0\r\n");
+    }
     match p.rdp.sec {
         // 2003/XP：关掉 CredSSP(NLA)，否则握手直接被服务端拒
         RdpSec::Legacy => s.push_str("enablecredsspsupport:i:0\r\n"),
@@ -259,8 +263,9 @@ fn xfreerdp_args(p: &ServerProfile, host: &str, user: &str, share: Option<&str>)
             a.push("-nego".into());
         }
     }
-    // 首次接受并记住证书指纹，换了再拒绝；xfreerdp 2.x 与 3.x 都支持
-    a.push("/cert:tofu".into());
+    // 默认 TOFU：首次接受并记住指纹，换证书后拒绝（xfreerdp 2.x/3.x 都支持）；
+    // 自签或换过的机器交给用户显式忽略
+    a.push(if p.rdp.ignore_cert { "/cert:ignore" } else { "/cert:tofu" }.into());
     if p.rdp.fullscreen {
         a.push("/f".into());
     }
@@ -337,11 +342,13 @@ mod tests {
         p.rdp.fullscreen = true;
         p.rdp.clipboard = false;
         p.rdp.sec = RdpSec::Legacy;
+        p.rdp.ignore_cert = true;
         let text = rdp_file_text(&p, "10.0.0.1", "a", Some("/home/u/docs"));
         assert!(text.contains("screen mode id:i:2\r\n"));
         assert!(text.contains("redirectclipboard:i:0\r\n"));
         assert!(text.contains("drivestoredirect:s:*\r\n"));
         assert!(text.contains("enablecredsspsupport:i:0\r\n"));
+        assert!(text.contains("authentication level:i:0\r\n"), "忽略证书要落到 mstsc 设置");
         assert!(!text.contains("/home/u/docs"), "mstsc 只整盘重定向，不写具体路径");
     }
 
@@ -408,6 +415,11 @@ mod tests {
         let args = xfreerdp_args(&p, "h", "u", None);
         assert!(args.iter().any(|a| a == "-clipboard"));
         assert!(args.iter().any(|a| a == "/f"));
+        assert!(args.iter().any(|a| a == "/cert:tofu"), "默认仍是 TOFU");
+        p.rdp.ignore_cert = true;
+        let args = xfreerdp_args(&p, "h", "u", None);
+        assert!(args.iter().any(|a| a == "/cert:ignore"), "勾选后应忽略服务端证书");
+        assert!(!args.iter().any(|a| a == "/cert:tofu"));
     }
 
     /// 空用户名会让 :force 把密码行当成用户名，必须提前挡住

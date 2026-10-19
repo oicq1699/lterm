@@ -8,7 +8,7 @@
 
   type RdpOptions = {
     sec: 'auto' | 'nla' | 'tls' | 'legacy';
-    shareDir: string | null; clipboard: boolean; fullscreen: boolean;
+    shareDir: string | null; clipboard: boolean; fullscreen: boolean; ignoreCert: boolean;
   };
   type Profile = {
     id: string; name: string; host: string; port: number; username: string;
@@ -82,7 +82,7 @@
   const activeTab = $derived(activeIdx >= 0 && activeIdx < tabs.length ? tabs[activeIdx] : null);
 
   function emptyRdp(): RdpOptions {
-    return { sec: 'auto', shareDir: null, clipboard: true, fullscreen: false };
+    return { sec: 'auto', shareDir: null, clipboard: true, fullscreen: false, ignoreCert: false };
   }
 
   // Rust 端对默认值不落盘（skip_serializing_if），这里补齐
@@ -517,6 +517,7 @@
           <div class="row">
             <label class="chk"><input type="checkbox" bind:checked={draft.rdp.clipboard} /> 剪贴板共享</label>
             <label class="chk"><input type="checkbox" bind:checked={draft.rdp.fullscreen} /> 全屏</label>
+            <label class="chk"><input type="checkbox" bind:checked={draft.rdp.ignoreCert} /> 忽略服务端证书</label>
           </div>
           <p class="hint">桌面在独立窗口打开，不占标签页，暂不支持跳板机。Linux 用 xfreerdp（apt install freerdp3-x11），目录共享是精确到这一个目录；Windows 用自带 mstsc，密码在其弹窗里输入，目录共享是整个本地驱动器（远程里是 \\tsclient\C）。</p>
         {/if}
@@ -734,10 +735,12 @@
     background: #1a1a1a; border-top: 1px solid #2a2a2a; border-bottom: 1px solid #2a2a2a; }
   .foldact { opacity: 0; transition: opacity .12s; }
   .folder-head:hover .foldact { opacity: 1; }
-  /* 行内操作按钮竖排放右边，横向只占一列，以后加按钮往这里堆 */
-  .acts { width: 24px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 1px; border-bottom: 1px solid #2a2a2a; }
-  .acts button { padding: 1px 3px; line-height: 1.15; display: flex; align-items: center; justify-content: center; }
+  /* 行内操作按钮单独一行放条目下方，横向不再挤占名称空间，以后加按钮直接往这里排 */
+  .member { flex-direction: column; align-items: stretch; }
+  .member .server { padding-left: 22px; border-bottom: none; }
+  .member:hover .acts { background: #2d2d2d; }
+  .acts { display: flex; justify-content: flex-end; gap: 2px; padding: 0 6px 3px; border-bottom: 1px solid #2a2a2a; }
+  .acts button { padding: 0 6px; line-height: 1.5; display: flex; align-items: center; justify-content: center; }
   .member .server { padding-left: 22px; }
   .server { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }
