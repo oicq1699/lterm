@@ -552,12 +552,14 @@
                     title={collapsedFolders.includes(sec.tag) && !searching ? '展开' : '收起'}>
               <span class="fold">{collapsedFolders.includes(sec.tag) && !searching ? '▸' : '▾'}</span>
               <span class="fname">{sec.label}</span>
+              <span class="fcount">{sec.items.length}</span>
             </button>
-            <span class="fcount">{sec.items.length}</span>
-            {#if sec.tag !== ''}
-              <button class="icon foldact" onclick={() => renameFolder(sec.tag)} title="重命名文件夹">✎</button>
-              <button class="del foldact" onclick={() => deleteFolder(sec.tag)} title="删除文件夹">×</button>
-            {/if}
+            <span class="folds">
+              {#if sec.tag !== ''}
+                <button class="icon foldact" onclick={() => renameFolder(sec.tag)} title="重命名文件夹">✎</button>
+                <button class="del foldact" onclick={() => deleteFolder(sec.tag)} title="删除文件夹">×</button>
+              {/if}
+            </span>
           </li>
         {/if}
         {#if searching || !collapsedFolders.includes(sec.tag)}
@@ -575,9 +577,11 @@
                 <span class="meta">{hit.server.username}@{hit.server.host} · {hit.server.protocol === 'rdp' ? 'RDP' : authLabel[hit.server.auth_method]}</span>
                 {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
               </button>
-              <button class="icon" onclick={() => duplicate(hit.server)} title="复制这台机器的配置"><Icon name="copy" size={14} /></button>
-              <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
-              <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
+              <span class="acts">
+                <button class="icon" onclick={() => duplicate(hit.server)} title="复制这台机器的配置"><Icon name="copy" size={13} /></button>
+                <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
+                <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
+              </span>
             </li>
           {/each}
         {/if}
@@ -713,9 +717,15 @@
   .folder:hover { background: #232323; }
   .fold { width: 12px; color: #777; }
   .fname { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fcount { align-self: center; color: #666; font-size: 11px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; padding: 0 4px 0 2px; }
-  .foldact { opacity: 0; transition: opacity .12s; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; }
+  .fcount { flex-shrink: 0; color: #666; font-size: 11px; }
+  .folds { width: 44px; flex-shrink: 0; display: flex; align-items: stretch; justify-content: flex-end;
+    background: #1a1a1a; border-top: 1px solid #2a2a2a; border-bottom: 1px solid #2a2a2a; }
+  .foldact { opacity: 0; transition: opacity .12s; }
   .folder-head:hover .foldact { opacity: 1; }
+  /* 行内操作按钮竖排放右边，横向只占一列，以后加按钮往这里堆 */
+  .acts { width: 24px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 1px; border-bottom: 1px solid #2a2a2a; }
+  .acts button { padding: 1px 3px; line-height: 1.15; display: flex; align-items: center; justify-content: center; }
   .member .server { padding-left: 22px; }
   .server { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }
