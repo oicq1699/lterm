@@ -88,6 +88,7 @@ mod tests {
             auth_method: AuthMethod::Agent,
             protocol: Default::default(),
             rdp: Default::default(),
+            icon: None,
             key_path: None,
             remark: String::new(),
             group_tag: None,

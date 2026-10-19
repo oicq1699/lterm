@@ -270,6 +270,7 @@ fn base_profile(port: u16, method: AuthMethod) -> ServerProfile {
         auth_method: method,
         protocol: Default::default(),
         rdp: Default::default(),
+        icon: None,
         key_path: None,
         remark: String::new(),
         group_tag: None,

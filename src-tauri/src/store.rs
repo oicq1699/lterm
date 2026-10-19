@@ -77,6 +77,9 @@ pub struct ServerProfile {
     pub protocol: Protocol,
     #[serde(default, skip_serializing_if = "RdpOptions::is_default")]
     pub rdp: RdpOptions,
+    /// 列表里的图标名（内置图标集，见前端 src/lib/icons.ts）
+    #[serde(default)]
+    pub icon: Option<String>,
     #[serde(default)]
     pub key_path: Option<String>,
     #[serde(default)]
@@ -296,6 +299,7 @@ mod tests {
             auth_method: AuthMethod::Agent,
             protocol: Protocol::Ssh,
             rdp: Default::default(),
+            icon: None,
             key_path: None,
             remark: String::new(),
             group_tag: group.map(Into::into),
@@ -363,12 +367,15 @@ mod tests {
         .unwrap();
         let mut st = ServerStore::load(&dir).unwrap();
         assert_eq!(st.servers[0].protocol, Protocol::Ssh, "老配置缺 protocol 字段应按 ssh 加载");
+        assert_eq!(st.servers[0].icon, None, "老配置没有 icon 字段应为空");
 
         st.servers[0].protocol = Protocol::Rdp;
         st.servers[0].port = 3389;
+        st.servers[0].icon = Some("fas fa-database".into());
         st.save().unwrap();
         let re = ServerStore::load(&dir).unwrap();
         assert_eq!(re.servers[0].protocol, Protocol::Rdp);
+        assert_eq!(re.servers[0].icon.as_deref(), Some("fas fa-database"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

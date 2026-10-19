@@ -46,6 +46,7 @@ async fn connect_real() -> client::Handle<AcceptAll> {
         auth_method: AuthMethod::Key,
         protocol: Default::default(),
         rdp: Default::default(),
+        icon: None,
         key_path: Some(key),
         remark: String::new(),
         group_tag: None,

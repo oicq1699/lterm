@@ -291,6 +291,7 @@ mod tests {
             auth_method: AuthMethod::Password,
             protocol: Protocol::Rdp,
             rdp: Default::default(),
+            icon: None,
             key_path: None,
             remark: String::new(),
             group_tag: None,

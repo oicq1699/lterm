@@ -3,6 +3,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import Session from '$lib/Session.svelte';
+  import Icon from '$lib/Icon.svelte';
+  import { ICON_NAMES, normalizeIcon, iconPaths } from '$lib/icons';
 
   type RdpOptions = {
     sec: 'auto' | 'nla' | 'tls' | 'legacy';
@@ -11,7 +13,7 @@
   type Profile = {
     id: string; name: string; host: string; port: number; username: string;
     auth_method: 'password' | 'key' | 'agent'; protocol: 'ssh' | 'rdp'; rdp: RdpOptions;
-    key_path: string | null;
+    icon: string | null; key_path: string | null;
     remark: string; group_tag: string | null;
     proxy_jump: string | null;
     created_at: number; updated_at: number;
@@ -25,6 +27,7 @@
   let hits: Hit[] = $state([]);
   let query = $state('');
   let showForm = $state(false);
+  let showIconPicker = $state(false);
   let draft: Profile = $state(emptyDraft());
   let error = $state('');
 
@@ -83,12 +86,12 @@
 
   // Rust 端对默认值不落盘（skip_serializing_if），这里补齐
   function norm(p: Profile): Profile {
-    return { ...p, rdp: { ...emptyRdp(), ...(p.rdp ?? {}) } };
+    return { ...p, icon: p.icon ?? null, rdp: { ...emptyRdp(), ...(p.rdp ?? {}) } };
   }
 
   function emptyDraft(): Profile {
     return { id: '', name: '', host: '', port: 22, username: 'root',
-      auth_method: 'agent', protocol: 'ssh', rdp: emptyRdp(), key_path: null, remark: '', group_tag: null,
+      auth_method: 'agent', protocol: 'ssh', rdp: emptyRdp(), icon: null, key_path: null, remark: '', group_tag: null,
       proxy_jump: null, created_at: 0, updated_at: 0 };
   }
 
@@ -213,9 +216,20 @@
 
   async function duplicate(p: Profile) {
     try {
-      await invoke('upsert_server', { profile: { ...p, id: '', name: copyName(p.name), created_at: 0, updated_at: 0 } });
+      const saved = norm(await invoke<Profile>('upsert_server', {
+        profile: { ...p, id: '', name: copyName(p.name), created_at: 0, updated_at: 0 },
+      }));
       await refresh();
+      // 复制的目的通常是改两台之间的差异，直接进编辑表单
+      draft = saved;
+      showForm = true;
     } catch (e) { error = String(e); }
+  }
+
+  function setIcon(v: string) {
+    // 认不出的名字也保留（比如以后扩充图标集），只是暂时不渲染
+    draft.icon = normalizeIcon(v) || null;
+    showIconPicker = false;
   }
 
   function estimateSize() {
@@ -436,6 +450,30 @@
       <form class="server-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
         <input placeholder="标题" bind:value={draft.name} required />
         <div class="row">
+          <button type="button" class="iconbtn" class:on={showIconPicker}
+                  onclick={() => showIconPicker = !showIconPicker} title="选择图标" aria-label="选择图标">
+            {#if draft.icon && iconPaths(draft.icon)}
+              <Icon name={draft.icon} size={18} />
+            {:else}
+              <span class="noicon">·</span>
+            {/if}
+          </button>
+          <input placeholder="图标（desktop、fas fa-server…）" value={draft.icon ?? ''}
+                 onchange={(e) => setIcon((e.target as HTMLInputElement).value)} />
+        </div>
+        {#if showIconPicker}
+          <div class="iconpick">
+            {#each ICON_NAMES as n (n)}
+              <button type="button" class="cell" class:sel={(draft.icon ?? '') === n} title={n}
+                      onclick={() => setIcon(n)}>
+                <Icon name={n} size={18} />
+              </button>
+            {/each}
+            <button type="button" class="cell none" class:sel={!draft.icon} title="不显示图标"
+                    onclick={() => setIcon('')}>无</button>
+          </div>
+        {/if}
+        <div class="row">
           <input placeholder="主机" bind:value={draft.host} required />
           <input class="port" type="number" placeholder="22" bind:value={draft.port} />
         </div>
@@ -528,11 +566,16 @@
               <button class="server" ondblclick={() => connect(hit.server)}
                       onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(hit.server); } }}
                       title="双击连接">
-                <span class="name">{hit.server.name}</span>
+                <span class="titlerow">
+                  {#if hit.server.icon && iconPaths(hit.server.icon)}
+                    <span class="sicon"><Icon name={hit.server.icon} size={15} /></span>
+                  {/if}
+                  <span class="name">{hit.server.name}</span>
+                </span>
                 <span class="meta">{hit.server.username}@{hit.server.host} · {hit.server.protocol === 'rdp' ? 'RDP' : authLabel[hit.server.auth_method]}</span>
                 {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
               </button>
-              <button class="icon" onclick={() => duplicate(hit.server)} title="复制这台机器的配置">复</button>
+              <button class="icon" onclick={() => duplicate(hit.server)} title="复制这台机器的配置"><Icon name="copy" size={14} /></button>
               <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
               <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
             </li>
@@ -651,6 +694,17 @@
   .server-form .lbl { color: #999; font-size: 12px; align-self: center; flex-shrink: 0; }
   .server-form .hint { margin: 0; font-size: 11px; color: #777; line-height: 1.45; }
   .server-form .chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #bbb; }
+  .iconbtn { width: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #8ab4f8;
+    border: 1px solid #444; border-radius: 5px; background: #2a2a2a; cursor: pointer; }
+  .iconbtn:hover, .iconbtn.on { border-color: #8ab4f8; }
+  .iconbtn .noicon { color: #666; font-size: 16px; line-height: 1; }
+  .iconpick { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; padding: 4px;
+    border: 1px solid #3a3a3a; border-radius: 6px; background: #1c1c1c; }
+  .iconpick .cell { display: flex; align-items: center; justify-content: center; height: 28px; color: #9fb6cc;
+    border: 1px solid transparent; border-radius: 5px; background: #242424; cursor: pointer; font-size: 11px; }
+  .iconpick .cell:hover { background: #2f2f2f; color: #ddd; }
+  .iconpick .cell.sel { border-color: #8ab4f8; color: #8ab4f8; }
+  .iconpick .none { grid-column: 1 / -1; color: #888; }
   .jumpsel { flex: 1; }
   .server-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
   .server-list li { display: flex; align-items: stretch; }
@@ -666,6 +720,8 @@
   .server { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }
   .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .titlerow { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .sicon { display: flex; align-items: center; color: #8ab4f8; flex-shrink: 0; }
   .meta { font-size: 12px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .remark { font-size: 12px; color: #6a9fb5; }
   .del { border: none; background: none; color: #666; cursor: pointer; }
