@@ -133,6 +133,10 @@ fn platform_launch(
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
 
+    if user.is_empty() {
+        // /from-stdin:force 会按 用户名→密码 的顺序读，缺用户名会让密码行被当成用户名
+        return Err("RDP 主机必须填写用户名".into());
+    }
     let bin = ["xfreerdp3", "xfreerdp"]
         .iter()
         .find_map(|b| which(b))
@@ -235,8 +239,12 @@ fn address(p: &ServerProfile, host: &str) -> String {
 fn xfreerdp_args(p: &ServerProfile, host: &str, user: &str, share: Option<&str>) -> Vec<String> {
     let mut a = vec![
         format!("/v:{}", address(p, host)),
-        // 凭据走管道：/p: 会明文出现在 /proc/<pid>/cmdline
-        "/from-stdin".into(),
+        // 凭据走管道：/p: 会明文出现在 /proc/<pid>/cmdline。
+        // 必须带 :force——不带时 FreeRDP 到 NLA 阶段才读，而它按 Domain、Password
+        // 两行的顺序读 stdin，我们只喂一行的话密码会被当成 Domain，Password 读到 EOF，
+        // 报 ERRCONNECT_CONNECT_CANCELLED / "NLA begin failed"（xfreerdp 2.x/3.x 皆如此）。
+        // :force 让它在连接前只读密码一行，用户名已经由 /u 给出。
+        "/from-stdin:force".into(),
     ];
     if !user.is_empty() {
         a.push(format!("/u:{user}"));
@@ -358,7 +366,8 @@ mod tests {
     fn xfreerdp_args_never_carry_the_password() {
         let args = xfreerdp_args(&rdp("10.0.0.9", 3389), "10.0.0.9", "u", None);
         assert!(args.iter().all(|a| !a.starts_with("/p:")), "密码不能进 argv");
-        assert!(args.iter().any(|a| a == "/from-stdin"));
+        // :force 是关键——不带 force 时 xfreerdp 会把我们喂的那一行当成 Domain
+        assert!(args.iter().any(|a| a == "/from-stdin:force"));
         assert_eq!(args[0], "/v:10.0.0.9:3389");
         assert!(args.iter().any(|a| a == "+clipboard"));
         assert!(args.iter().any(|a| a == "/dynamic-resolution"));
@@ -401,10 +410,18 @@ mod tests {
         assert!(args.iter().any(|a| a == "/f"));
     }
 
+    /// 空用户名会让 :force 把密码行当成用户名，必须提前挡住
     #[cfg(unix)]
     #[test]
-    fn which_finds_known_binaries() {
-        assert!(which("sh").is_some());
+    fn rdp_needs_a_username_on_linux() {
+        let mut p = rdp("10.0.0.9", 3389);
+        p.username = String::new();
+        assert_eq!(launch(&p, Some("pw".into())).unwrap_err(), "RDP 主机必须填写用户名");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn which_finds_known_binaries() {        assert!(which("sh").is_some());
         assert!(which("definitely-not-a-binary-xyz").is_none());
     }
 
