@@ -16,6 +16,8 @@ pub struct Settings {
     pub context_menu: bool,
     /// 收起的分组文件夹名（空串 = 未分组）
     pub collapsed_folders: Vec<String>,
+    /// Ctrl+Enter 发送什么：newline=等价 Alt+Enter（多数 TUI 的换行键）/ csiu=Kitty 编码 / same=不拦截（原样 Enter）
+    pub ctrl_enter: String,
 }
 
 impl Default for Settings {
@@ -28,6 +30,7 @@ impl Default for Settings {
             aside_hidden: false,
             context_menu: true,
             collapsed_folders: Vec::new(),
+            ctrl_enter: "newline".into(),
         }
     }
 }
@@ -65,4 +68,31 @@ pub fn get_settings(store: State<'_, Mutex<AppSettings>>) -> Settings {
 #[tauri::command]
 pub fn set_settings(store: State<'_, Mutex<AppSettings>>, settings: Settings) -> Result<(), String> {
     store.lock().unwrap().set(settings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_file_gets_ctrl_enter_default() {
+        let dir = std::env::temp_dir().join(format!("lterm-settings-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"fontFamily":"Mono","fontSize":16,"copyOnSelect":false,"confirmMultiLine":true,"asideHidden":true,"contextMenu":true,"collapsedFolders":["生产"]}"#,
+        )
+        .unwrap();
+        let st = AppSettings::load(&dir).unwrap();
+        assert_eq!(st.inner.font_size, 16);
+        assert_eq!(st.inner.ctrl_enter, "newline", "老配置缺字段应取默认值");
+
+        let mut s = st.inner.clone();
+        s.ctrl_enter = "same".into();
+        let mut app = AppSettings::load(&dir).unwrap();
+        app.set(s).unwrap();
+        let re = AppSettings::load(&dir).unwrap();
+        assert_eq!(re.inner.ctrl_enter, "same");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

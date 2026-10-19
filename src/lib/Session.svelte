@@ -11,6 +11,13 @@
   import '@xterm/xterm/css/xterm.css';
   import SftpBrowser from './SftpBrowser.svelte';
 
+  // Ctrl+Enter 的改写目标：ESC+CR 等同 Alt+Enter（绝大多数 TUI 认这个），
+  // CSI 13;5u 是 Kitty 键盘协议的编码，支持它的应用能真正区分出 Ctrl+Enter
+  const CTRL_ENTER_BYTES: Record<string, string> = {
+    newline: '\x1b\r',
+    csiu: '\x1b[13;5u',
+  };
+
   type Props = {
     sessionId: string;
     profileId: string;
@@ -21,6 +28,8 @@
     prefCopyOnSelect: boolean;
     prefConfirmMultiLine: boolean;
     prefContextMenu: boolean;
+    /** Ctrl+Enter 发送的字节：'newline'（等价 Alt+Enter）| 'csiu'（Kitty 编码）| 'same'（不拦截） */
+    prefCtrlEnter: string;
     onClosed: () => void;
     onClone?: () => void;
     onResize: (cols: number, rows: number) => void;
@@ -29,7 +38,7 @@
   };
   let {
     sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
-    prefContextMenu, onClosed, onClone, onResize, registerFit, registerApi,
+    prefContextMenu, prefCtrlEnter, onClosed, onClone, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
@@ -304,6 +313,13 @@
       }
       if (e.type !== 'keydown' || !e.ctrlKey) return true;
       const k = e.key.toLowerCase();
+      // Ctrl+Enter 在终端协议里和 Enter 是同一字节（\r），TUI 分不出来，
+      // 所以按偏好改写成 Alt+Enter 的 ESC+CR，或 Kitty CSI-u 编码
+      if (k === 'enter' && !e.shiftKey && !e.metaKey && prefCtrlEnter !== 'same') {
+        e.preventDefault();
+        sendText(CTRL_ENTER_BYTES[prefCtrlEnter] ?? '\x1b\r');
+        return false;
+      }
       // preventDefault：屏蔽 WebView2 原生 Ctrl+Shift+C/V 快捷键，避免与手动 paste 叠加成双份
       if (e.shiftKey && k === 'c') { e.preventDefault(); copySelection(); return false; }
       if (e.shiftKey && k === 'v') { e.preventDefault(); pasteClipboard(); return false; }

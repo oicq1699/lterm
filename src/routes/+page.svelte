@@ -47,7 +47,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[] };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -58,6 +58,7 @@
   let showAside = $state(true);
   let settingsLoaded = $state(false);
   let collapsedFolders = $state<string[]>([]);
+  let prefCtrlEnter = $state('newline');
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -67,7 +68,7 @@
         fontFamily, fontSize, copyOnSelect: prefCopyOnSelect,
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
         contextMenu: prefContextMenu,
-        collapsedFolders,
+        collapsedFolders, ctrlEnter: prefCtrlEnter,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -382,6 +383,7 @@
       prefConfirmMultiLine = s.confirmMultiLine;
       prefContextMenu = s.contextMenu;
       collapsedFolders = s.collapsedFolders ?? [];
+      prefCtrlEnter = s.ctrlEnter || 'newline';
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -628,6 +630,7 @@
                  {prefCopyOnSelect}
                  {prefConfirmMultiLine}
                  prefContextMenu={prefContextMenu}
+                 prefCtrlEnter={prefCtrlEnter}
                  onClone={() => activeTab && connect(activeTab.profile)}
                  onClosed={() => onTabClosed(t.sid)}
                  onResize={(cols, rows) => { if (t.alive) invoke('resize', { id: t.sid, cols, rows }); }}
@@ -659,6 +662,15 @@
             <label><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
             <label><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
           </div>
+          <div class="srow">
+            <span class="lbl">Ctrl+Enter</span>
+            <select class="ctlsel" bind:value={prefCtrlEnter} onchange={saveSettingsSoon}>
+              <option value="newline">换行（发 Alt+Enter 的字节）</option>
+              <option value="csiu">换行（Kitty CSI-u 编码）</option>
+              <option value="same">不拦截（等同 Enter）</option>
+            </select>
+          </div>
+          <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
           <div class="srow">
             <span class="lbl">字号</span>
             <button onclick={() => setFont(fontSize - 1)}>−</button>
@@ -762,11 +774,13 @@
   .gear { background: none; border: none; color: #999; cursor: pointer; font-size: 12px; }
   .icon { border: none; background: none; color: #666; cursor: pointer; padding: 0 6px; }
   .icon:hover { color: #8ab4f8; }
-  .settings { position: absolute; bottom: 28px; right: 8px; background: #252525; border: 1px solid #444; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; z-index: 10; width: 340px; color: #ccc; }
-  .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; white-space: nowrap; }
-  .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
-  .srow .lbl { width: 30px; color: #aaa; flex-shrink: 0; }
+  .settings { position: absolute; bottom: 28px; right: 8px; background: #252525; border: 1px solid #444; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; z-index: 10; width: 380px; color: #ccc; }
+  .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; flex-wrap: wrap; }
+  .srow .lbl { width: auto; min-width: 30px; color: #aaa; flex-shrink: 0; }
+  .srow .ctlsel { padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
+  .srow .ctlsel option { background: #2a2a2a; color: #eee; }
   .srow .num { width: 26px; text-align: center; }
   .srow .fontin { flex: 1; min-width: 100px; padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
-  .settings .hint { font-size: 11px; color: #777; white-space: normal; }
+  .settings .hint { font-size: 11px; color: #777; line-height: 1.5; }
 </style>
