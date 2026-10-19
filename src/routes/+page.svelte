@@ -202,6 +202,22 @@
     } catch (e) { error = String(e); }
   }
 
+  function copyName(base: string) {
+    // 复制一个副本时回到原名重新编号，避免名字越叠越长
+    const root = base.replace(/-复制\d*$/, '');
+    const taken = new Set(servers.map((s) => s.name));
+    let name = `${root}-复制`;
+    for (let i = 2; taken.has(name); i++) name = `${root}-复制${i}`;
+    return name;
+  }
+
+  async function duplicate(p: Profile) {
+    try {
+      await invoke('upsert_server', { profile: { ...p, id: '', name: copyName(p.name), created_at: 0, updated_at: 0 } });
+      await refresh();
+    } catch (e) { error = String(e); }
+  }
+
   function estimateSize() {
     const w = paneEl?.clientWidth ?? 800;
     const h = paneEl?.clientHeight ?? 600;
@@ -516,6 +532,7 @@
                 <span class="meta">{hit.server.username}@{hit.server.host} · {hit.server.protocol === 'rdp' ? 'RDP' : authLabel[hit.server.auth_method]}</span>
                 {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
               </button>
+              <button class="icon" onclick={() => duplicate(hit.server)} title="复制这台机器的配置">复</button>
               <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
               <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
             </li>
@@ -646,10 +663,10 @@
   .foldact { opacity: 0; transition: opacity .12s; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; border-top: 1px solid #2a2a2a; }
   .folder-head:hover .foldact { opacity: 1; }
   .member .server { padding-left: 22px; }
-  .server { flex: 1; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+  .server { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }
-  .name { font-weight: 600; }
-  .meta { font-size: 12px; color: #888; }
+  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { font-size: 12px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .remark { font-size: 12px; color: #6a9fb5; }
   .del { border: none; background: none; color: #666; cursor: pointer; }
   .del:hover { color: #e57373; }
