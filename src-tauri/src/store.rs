@@ -30,6 +30,9 @@ pub enum RdpSec {
     Auto,
     /// 强制 NLA（域账户、2008R2 及以上）
     Nla,
+    /// NLA + 放宽 TLS（2008 R2 这类 SHA1 证书的老 SChannel 服务端；
+    /// 仅 Linux xfreerdp3 有意义——客户端默认不允许 SHA1 签名算法，这类服务端会直接断连）
+    Weak,
     /// 仅 TLS
     Tls,
     /// 老式 RDP 加密，无 NLA（2003/XP）
@@ -46,6 +49,9 @@ pub struct RdpOptions {
     pub fullscreen: bool,
     /// 忽略服务端证书校验（自签/换证的机器用），默认关闭走 TOFU 首次信任
     pub ignore_cert: bool,
+    /// 固定分辨率（全屏时忽略）；None = 交给客户端默认/动态调整
+    pub width: Option<u16>,
+    pub height: Option<u16>,
 }
 
 impl Default for RdpOptions {
@@ -56,6 +62,8 @@ impl Default for RdpOptions {
             clipboard: true,
             fullscreen: false,
             ignore_cert: false,
+            width: None,
+            height: None,
         }
     }
 }
