@@ -68,9 +68,16 @@ pub async fn connect_chain(
         let config = Arc::new(client::Config::default());
         let handler = LtermHandler::for_host(app.clone(), hop);
         let mut handle = match prev.take() {
-            None => client::connect(config, (hop.host.as_str(), hop.port), handler)
+            None => {
+                // 连不上的主机原本要等 OS 层 TCP 超时（可达一分多钟），这里封顶 15 秒
+                let attempt = tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    client::connect(config, (hop.host.as_str(), hop.port), handler),
+                )
                 .await
-                .map_err(|e| format!("连接 {}:{} 失败: {e}", hop.host, hop.port))?,
+                .map_err(|_| format!("连接 {}:{} 超时（15 秒未响应），请检查地址、端口或防火墙", hop.host, hop.port))?;
+                attempt.map_err(|e| format!("连接 {}:{} 失败: {e}", hop.host, hop.port))?
+            }
             Some(jump) => {
                 let channel = jump
                     .channel_open_direct_tcpip(hop.host.clone(), hop.port as u32, "127.0.0.1", 0)

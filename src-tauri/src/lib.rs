@@ -10,6 +10,7 @@ pub mod session;
 pub mod settings;
 pub mod sftp;
 pub mod store;
+pub mod tunnel;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

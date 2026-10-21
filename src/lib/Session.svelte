@@ -32,13 +32,15 @@
     prefCtrlEnter: string;
     onClosed: () => void;
     onClone?: () => void;
+    /** 面板收起/关闭时请求把焦点交还终端（xterm 输入框只能有一个持有者） */
+    onFocusBack?: () => void;
     onResize: (cols: number, rows: number) => void;
     registerFit: (fn: () => void) => void;
     registerApi: (sid: string, api: { writeLine: (t: string) => void }) => void;
   };
   let {
     sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
-    prefContextMenu, prefCtrlEnter, onClosed, onClone, onResize, registerFit, registerApi,
+    prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
@@ -363,6 +365,22 @@
     term?.focus();
   }
 
+  // 图标按钮/面板关闭按钮：按下不抢焦点，收起面板后把焦点交还终端输入框
+  const noFocus = (e: MouseEvent) => e.preventDefault();
+  // 只在面板从“开”变“关”时回收焦点；active 等只懒读，避免切标签时误触发
+  let prevSftp = false, prevFwd = false;
+  $effect(() => {
+    const s = showSftp, f = showFwd;
+    const closed = (prevSftp && !s) || (prevFwd && !f);
+    prevSftp = s; prevFwd = f;
+    if (closed && !s && !f) {
+      queueMicrotask(() => {
+        if (onFocusBack) onFocusBack();
+        else if (active) term?.focus();
+      });
+    }
+  });
+
   onDestroy(() => {
     window.removeEventListener('keydown', onWinKeydown, true);
     for (const u of unlistenAll) u();
@@ -371,7 +389,7 @@
 </script>
 
 <svelte:window onpointerdown={onWinPointerDown} />
-<div class="term-wrap" style:display={active ? 'flex' : 'none'}>
+<div class="term-wrap" class:hidden={!active}>
   <div class="term-col">
     {#if showSearch}
       <div class="findbar">
@@ -392,17 +410,17 @@
     <div class="sftp-side" class:wide={sftpWide}>
       <div class="sftp-head">
         <span>SFTP 文件</span>
-        <button onclick={() => sftpWide = !sftpWide} title="显示/隐藏权限与所有者两列">{sftpWide ? '精简' : '详情'}</button>
-        <button onclick={() => showSftp = false} aria-label="关闭文件面板">✕</button>
+        <button onmousedown={noFocus} onclick={() => sftpWide = !sftpWide} title="显示/隐藏权限与所有者两列">{sftpWide ? '精简' : '详情'}</button>
+        <button onmousedown={noFocus} onclick={() => showSftp = false} aria-label="关闭文件面板">✕</button>
       </div>
       <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} wide={sftpWide} />
     </div>
   {/if}
   {#if showFwd}
-    <div class="fwd-side" style:right={showSftp ? `${sftpW}px` : '0'}>
+    <div class="fwd-side" style:right={showSftp ? `${34 + sftpW}px` : '34px'}>
       <div class="sftp-head">
         <span>端口转发（本会话）</span>
-        <button onclick={() => showFwd = false} aria-label="关闭转发面板">✕</button>
+        <button onmousedown={noFocus} onclick={() => showFwd = false} aria-label="关闭转发面板">✕</button>
       </div>
       <div class="fwd-form">
         <div class="frow"><label for="fl-{sessionId}">本地端口</label><input id="fl-{sessionId}" type="number" placeholder="如 8080" bind:value={fwdLocal} /></div>
@@ -426,23 +444,25 @@
       </ul>
     </div>
   {/if}
-  <div class="tool-stack" style:right={`${8 + (showSftp ? sftpW : 0) + (showFwd ? 360 : 0)}px`}>
-    <button class="ptool" class:open={showSftp} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
-    <button class="ptool" class:open={showFwd} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
+  <div class="tools-rail">
+    <button class="ptool" class:open={showSftp} onmousedown={noFocus} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
+    <button class="ptool" class:open={showFwd} onmousedown={noFocus} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
   </div>
   {#if ctx}
     <div class="ctxmenu" bind:this={ctxEl} role="menu" style:left={`${ctx.x}px`} style:top={`${ctx.y}px`}>
-      <button role="menuitem" class:off={!hasSel} onclick={() => { if (hasSel) void copySelection(); closeCtx(); }}>复制</button>
-      <button role="menuitem" onclick={() => { void pasteClipboard(); closeCtx(); }}>粘贴</button>
+      <button role="menuitem" class:off={!hasSel} onmousedown={noFocus} onclick={() => { if (hasSel) void copySelection(); closeCtx(); }}>复制</button>
+      <button role="menuitem" onmousedown={noFocus} onclick={() => { void pasteClipboard(); closeCtx(); }}>粘贴</button>
       {#if onClone}
-        <button role="menuitem" onclick={() => { onClone(); closeCtx(); }}>克隆此连接</button>
+        <button role="menuitem" onmousedown={noFocus} onclick={() => { onClone(); closeCtx(); }}>克隆此连接</button>
       {/if}
     </div>
   {/if}
 </div>
 
 <style>
-  .term-wrap { height: 100%; flex: 1; min-width: 0; position: relative; }
+  /* 隐藏用 class 而不是 style:display：内联 display 会盖掉这里的 flex，竖排图标条会掉到终端下面 */
+  .term-wrap { height: 100%; flex: 1; min-width: 0; position: relative; display: flex; }
+  .term-wrap.hidden { display: none !important; }
   .ctxmenu { position: fixed; z-index: 60; min-width: 136px; background: #262626; border: 1px solid #454545; border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 1px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55); }
   .ctxmenu button { display: block; width: 100%; text-align: left; background: none; border: none; color: #ddd; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; }
   .ctxmenu button:hover { background: #363636; }
@@ -453,15 +473,17 @@
   .findbar { display: flex; gap: 4px; padding: 4px 8px; background: #222; border-bottom: 1px solid #333; }
   .findbar input { flex: 1; padding: 4px 8px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .findbar button { padding: 2px 10px; }
-  .sftp-side { position: absolute; right: 0; top: 0; bottom: 0; width: 580px; min-width: 420px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 20; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
+  /* 面板让开图标列（30px）+ 4px 缝，否则盖住图标右半边 */
+  .sftp-side { position: absolute; right: 34px; top: 0; bottom: 0; width: 580px; min-width: 420px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 20; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
   .sftp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
   .sftp-head span { flex: 1; }
   .sftp-side.wide { width: 980px; }
   .sftp-head button { background: none; border: none; color: #999; cursor: pointer; }
-  .ptool { background: #222c; border: 1px solid #3a3a3a; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 3px 9px; font-size: 13px; }
+  .ptool { width: 100%; box-sizing: border-box; text-align: center; background: #222c; border: 1px solid #3a3a3a; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 3px 0; font-size: 13px; }
   .ptool.open { color: #101010; background: #8ab4f8; }
   .ptool:hover { border-color: #8ab4f8; }
-  .tool-stack { position: absolute; top: 6px; z-index: 23; display: flex; gap: 6px; }
+  /* 图标改竖排、与终端并排占独立一列（定宽 30px），不再悬在文字上方 */
+  .tools-rail { flex-shrink: 0; width: 30px; display: flex; flex-direction: column; gap: 4px; padding: 6px 0 0; }
   .fwd-side { position: absolute; top: 0; bottom: 0; width: 360px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 22; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
   .fwd-form { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #2a2a2a; }
   .frow { display: flex; align-items: center; gap: 8px; }

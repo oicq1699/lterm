@@ -385,6 +385,7 @@
   .pane li { display: flex; gap: 6px; padding: 2px 8px; cursor: pointer; align-items: baseline; }
   .pane li:hover { background: #232323; }
   .pane li.selected { background: #2d4f60; }
+  .pane li:focus-visible { outline: 2px solid #8ab4f8; outline-offset: -2px; }
   .ico { width: 14px; }
   .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fsize { width: 52px; text-align: right; color: #888; }
