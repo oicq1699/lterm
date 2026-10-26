@@ -743,9 +743,9 @@
           </div>
           <div class="hint">增亮是整块终端画面做亮度缩放，16 色/256 色/真彩/淡色文字都会被抬起来；背景也会略微变亮。上面两个设置管不到的真彩输出，用它兜底。</div>
           <div class="srow">
-            <label><input type="checkbox" bind:checked={prefTruecolor} onchange={saveSettingsSoon} /> 向远端声明 24 位真彩（TERM=xterm-24bit + COLORTERM=truecolor）</label>
+            <label><input type="checkbox" bind:checked={prefTruecolor} onchange={saveSettingsSoon} /> 向远端请求真彩（只发 COLORTERM=truecolor，TERM 仍为 xterm-256color）</label>
           </div>
-          <div class="hint">用于消掉「True color (24-bit) support not detected」这类提示。开启后<strong>新建</strong>的连接生效；若远端没有 xterm-24bit 的 terminfo（老系统常见），vim/tmux 可能报未知终端类型，关掉即可。</div>
+          <div class="hint">开启后<strong>新建</strong>的连接生效。sshd 默认 <code>AcceptEnv</code> 只放行 LANG/LC_*，会把 COLORTERM 丢掉 —— 那种机器上要么服务端加 <code>AcceptEnv COLORTERM</code>，要么在远端 shell 里 <code>export COLORTERM=truecolor</code>。不要靠改 TERM 声明真彩：xterm-24bit 等名字在远端多半没有对应 terminfo，readline 取不到 kbs/el，退格会变成打空格。</div>
         </div>
       {/if}
     </div>

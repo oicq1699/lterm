@@ -22,7 +22,7 @@ pub struct Settings {
     pub palette: String,
     /// 文字与背景的最小对比度（WCAG），1=不增强，4.5=AA，7=AAA
     pub min_contrast: f64,
-    /// 向远端声明 24 位真彩（TERM=xterm-24bit + COLORTERM=truecolor）
+    /// 向远端请求 COLORTERM=truecolor（TERM 仍是 xterm-256color，避免 terminfo 查不到）
     pub truecolor: bool,
     /// 终端整体增亮档位 0=关 1..3，作用于所有颜色（含 256 色/真彩/淡色文字）
     pub bright: u32,

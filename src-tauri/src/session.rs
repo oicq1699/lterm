@@ -178,11 +178,13 @@ pub async fn connect(
         .await
         .map_err(|e| format!("打开通道失败: {e}"))?;
     if truecolor {
-        // 远端 sshd 默认 AcceptEnv 只放行 LANG/LC_*，被拒也无妨：TERM 名字本身已声明 24 位色
+        // 只发 COLORTERM，不动 TERM：TERM 必须是远端 terminfo 里真实存在的条目，
+        // 换成 xterm-24bit 之类查不到的名字会让 readline 取不到 kbs/el，退格变成打空格。
+        // 服务端 sshd 默认 AcceptEnv 只放行 LANG/LC_*，被拒时保持 256 色即可。
         channel.set_env(true, "COLORTERM", "truecolor").await.ok();
     }
     channel
-        .request_pty(true, if truecolor { "xterm-24bit" } else { "xterm-256color" }, cols, rows, 0, 0, &[])
+        .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
         .await
         .map_err(|e| format!("请求 PTY 失败: {e}"))?;
     channel
