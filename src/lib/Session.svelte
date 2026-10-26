@@ -30,6 +30,8 @@
     prefPalette: string;
     /** 最小对比度（WCAG），1=关闭 */
     prefMinContrast: number;
+    /** 整体增亮档位 0..3，走 CSS filter，对 16 色/256 色/真彩/淡色文字一律生效 */
+    prefBright: number;
     prefCopyOnSelect: boolean;
     prefConfirmMultiLine: boolean;
     prefContextMenu: boolean;
@@ -45,9 +47,13 @@
   };
   let {
     sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefPalette, prefMinContrast,
+    prefBright,
     prefCopyOnSelect, prefConfirmMultiLine,
     prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
+
+  const BRIGHT = ['none', 'brightness(1.1)', 'brightness(1.2)', 'brightness(1.35)'];
+  const brightFilter = $derived(BRIGHT[prefBright] ?? 'none');
 
   let term: Terminal | undefined;
   let termReady = $state(false);
@@ -441,7 +447,7 @@
         <button onclick={closeSearch}>✕</button>
       </div>
     {/if}
-    <div class="term" bind:this={termHost}></div>
+    <div class="term" bind:this={termHost} style:filter={brightFilter}></div>
   </div>
   {#if showSftp}
     <div class="sftp-side" style:width={`${sftpW}px`}>

@@ -66,7 +66,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; minContrast: number };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; minContrast: number; truecolor: boolean; bright: number };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -80,6 +80,8 @@
   let prefCtrlEnter = $state('newline');
   let prefPalette = $state('tango');
   let prefMinContrast = $state(1);
+  let prefTruecolor = $state(false);
+  let prefBright = $state(0);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -91,6 +93,7 @@
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
         palette: prefPalette, minContrast: prefMinContrast,
+        truecolor: prefTruecolor, bright: prefBright,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -346,6 +349,7 @@
     try {
       const sid = await invoke<string>('connect', {
         profileId: p.id, password: pwMap[p.id] ?? null, proxyPasswords: pwMap, cols, rows,
+        truecolor: prefTruecolor,
       });
       tabs = [...tabs, { sid, profile: p, alive: true, password: pwMap[p.id] ?? null }];
       activeIdx = tabs.length - 1;
@@ -490,6 +494,8 @@
       prefCtrlEnter = s.ctrlEnter || 'newline';
       prefPalette = s.palette || 'tango';
       prefMinContrast = s.minContrast || 1;
+      prefTruecolor = !!s.truecolor;
+      prefBright = s.bright || 0;
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -641,6 +647,7 @@
                  {fontSize}
                  {prefPalette}
                  {prefMinContrast}
+                 {prefBright}
                  {prefCopyOnSelect}
                  {prefConfirmMultiLine}
                  prefContextMenu={prefContextMenu}
@@ -725,6 +732,20 @@
             </select>
           </div>
           <div class="hint">对比度会按背景把偏暗的前景色自动提亮（含 256 色/真彩应用），弱屏和可视角度差的屏建议选 AA；配色与对比度可叠加。</div>
+          <div class="srow">
+            <span class="lbl">增亮</span>
+            <select class="ctlsel" bind:value={prefBright} onchange={saveSettingsSoon}>
+              <option value={0}>关</option>
+              <option value={1}>弱（×1.1）</option>
+              <option value={2}>中（×1.2）</option>
+              <option value={3}>强（×1.35）</option>
+            </select>
+          </div>
+          <div class="hint">增亮是整块终端画面做亮度缩放，16 色/256 色/真彩/淡色文字都会被抬起来；背景也会略微变亮。上面两个设置管不到的真彩输出，用它兜底。</div>
+          <div class="srow">
+            <label><input type="checkbox" bind:checked={prefTruecolor} onchange={saveSettingsSoon} /> 向远端声明 24 位真彩（TERM=xterm-24bit + COLORTERM=truecolor）</label>
+          </div>
+          <div class="hint">用于消掉「True color (24-bit) support not detected」这类提示。开启后<strong>新建</strong>的连接生效；若远端没有 xterm-24bit 的 terminfo（老系统常见），vim/tmux 可能报未知终端类型，关掉即可。</div>
         </div>
       {/if}
     </div>

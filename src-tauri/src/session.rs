@@ -150,6 +150,7 @@ pub async fn connect(
     proxy_passwords: Option<HashMap<String, String>>,
     cols: u32,
     rows: u32,
+    truecolor: bool,
 ) -> Result<String, String> {
     let profile: ServerProfile = store
         .lock()
@@ -176,8 +177,12 @@ pub async fn connect(
         .channel_open_session()
         .await
         .map_err(|e| format!("打开通道失败: {e}"))?;
+    if truecolor {
+        // 远端 sshd 默认 AcceptEnv 只放行 LANG/LC_*，被拒也无妨：TERM 名字本身已声明 24 位色
+        channel.set_env(true, "COLORTERM", "truecolor").await.ok();
+    }
     channel
-        .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
+        .request_pty(true, if truecolor { "xterm-24bit" } else { "xterm-256color" }, cols, rows, 0, 0, &[])
         .await
         .map_err(|e| format!("请求 PTY 失败: {e}"))?;
     channel
