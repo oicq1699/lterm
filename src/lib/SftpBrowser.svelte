@@ -296,7 +296,7 @@
               <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, en.is_dir)}</span>
               <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
             {/if}
-            <span class="fname">{en.name}</span>
+            <span class="fname" title={en.path}>{en.name}</span>
             <span class="fsize">{en.is_dir ? '' : fmtSize(en.size)}</span>
             <span class="fdate">{fmtDate(en.modified)}</span>
           </li>
@@ -331,7 +331,7 @@
               <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, en.is_dir)}</span>
               <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
             {/if}
-            <span class="fname">{en.name}</span>
+            <span class="fname" title={en.path}>{en.name}</span>
             <span class="fsize">{en.is_dir ? '' : fmtSize(en.size)}</span>
             <span class="fdate">{fmtDate(en.modified)}</span>
           </li>
@@ -381,20 +381,20 @@
   .tag { color: #8ab4f8; font-size: 11px; }
   .path { flex: 1; min-width: 0; padding: 3px 6px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 11px; }
   .pathbar button, .ops button { padding: 2px 7px; font-size: 11px; border-radius: 4px; border: 1px solid #444; background: #2a2a2a; color: #ccc; cursor: pointer; }
-  .pane ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+  .pane ul { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; }
   .pane li { display: flex; gap: 6px; padding: 2px 8px; cursor: pointer; align-items: baseline; }
   .pane li:hover { background: #232323; }
   .pane li.selected { background: #2d4f60; }
   .pane li:focus-visible { outline: 2px solid #8ab4f8; outline-offset: -2px; }
-  .ico { width: 14px; }
-  .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fsize { width: 52px; text-align: right; color: #888; }
+  .ico { width: 14px; flex-shrink: 0; }
+  .fname { flex: 1; min-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fsize { width: 52px; flex-shrink: 0; text-align: right; color: #888; }
   .fperm { width: 78px; color: #86b386; font-family: monospace; flex-shrink: 0; }
   .fown { width: 88px; color: #8a93a6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
   .colhead { display: flex; gap: 6px; padding: 2px 8px; color: #666; font-size: 11px; border-bottom: 1px solid #262626; }
   .colhead span { flex-shrink: 0; }
-  .colhead .ch-name { flex: 1; }
-  .fdate { width: 76px; text-align: right; color: #666; }
+  .colhead .ch-name { flex: 1; min-width: 96px; }
+  .fdate { width: 76px; flex-shrink: 0; text-align: right; color: #666; }
   .empty { color: #666; padding: 8px; }
   .ops { display: flex; gap: 4px; padding: 4px; border-top: 1px solid #2a2a2a; flex-wrap: wrap; }
   .transfers { border-top: 1px solid #333; max-height: 130px; overflow-y: auto; padding: 4px; }

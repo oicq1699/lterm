@@ -9,6 +9,7 @@
   import { WebglAddon } from '@xterm/addon-webgl';
   import { readText } from '@tauri-apps/plugin-clipboard-manager';
   import '@xterm/xterm/css/xterm.css';
+  import { termTheme } from './termPalette';
   import SftpBrowser from './SftpBrowser.svelte';
 
   // Ctrl+Enter 的改写目标：ESC+CR 等同 Alt+Enter（绝大多数 TUI 认这个），
@@ -25,6 +26,10 @@
     fontFamily: string;
     active: boolean;
     fontSize: number;
+    /** ANSI 调色板：tango | xterm | high */
+    prefPalette: string;
+    /** 最小对比度（WCAG），1=关闭 */
+    prefMinContrast: number;
     prefCopyOnSelect: boolean;
     prefConfirmMultiLine: boolean;
     prefContextMenu: boolean;
@@ -39,19 +44,43 @@
     registerApi: (sid: string, api: { writeLine: (t: string) => void }) => void;
   };
   let {
-    sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefCopyOnSelect, prefConfirmMultiLine,
+    sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefPalette, prefMinContrast,
+    prefCopyOnSelect, prefConfirmMultiLine,
     prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
+  let termReady = $state(false);
+  let webgl: WebglAddon | undefined;
   let fit: FitAddon | undefined;
   let searchAddon: SearchAddon | undefined;
   let unlistenAll: UnlistenFn[] = [];
   let termHost: HTMLDivElement | undefined = $state();
   let showSearch = $state(false);
   let showSftp = $state(false);
-  let sftpWide = $state(false);
-  const sftpW = $derived(sftpWide ? 980 : 580);
+  let sftpW = $state(580);
+  // 详情列（权限/所有者）随面板实际宽度出现，拖拽和「详情」按钮不会互相矛盾
+  const sftpWide = $derived(sftpW >= 900);
+  const sftpMinW = 420;
+  const sftpMaxW = () => Math.max(sftpMinW, window.innerWidth - 80);
+  const clampSftpW = (w: number) => Math.min(sftpMaxW(), Math.max(sftpMinW, w));
+
+  function toggleSftpCols() {
+    sftpW = clampSftpW(sftpWide ? 580 : 980);
+  }
+
+  function startSftpResize(e: PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sftpW;
+    const move = (ev: PointerEvent) => { sftpW = clampSftpW(startW + (startX - ev.clientX)); };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
   let searchTerm = $state('');
   let dead = $state(false);
 
@@ -141,6 +170,14 @@
   }
   $effect(() => { if (showFwd) void refreshForwards(); });
 
+  // 配色/对比度改动即时作用到已开着的终端（WebGL 的图集要清掉才会用新色重绘）
+  $effect(() => {
+    if (!termReady) return;
+    term!.options.theme = termTheme(prefPalette);
+    term!.options.minimumContrastRatio = prefMinContrast;
+    try { webgl?.clearTextureAtlas(); } catch { /* 渲染器已降级 */ }
+  });
+
   onMount(async () => {
     term = new Terminal({
       fontFamily: fontStack(),
@@ -148,10 +185,8 @@
       scrollback: 10000,
       cursorBlink: true,
       allowProposedApi: true,
-      theme: {
-        background: '#101010', foreground: '#d4d4d4', cursor: '#7fd1b9',
-        selectionBackground: '#2d4f60',
-      },
+      theme: termTheme(prefPalette),
+      minimumContrastRatio: prefMinContrast,
     });
     fit = new FitAddon();
     searchAddon = new SearchAddon();
@@ -268,10 +303,12 @@
     }
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
     try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* 已释放 */ } });
-      term.loadAddon(webgl);
-    } catch { /* 无 WebGL 环境，保持默认渲染器 */ }
+      const g = new WebglAddon();
+      g.onContextLoss(() => { try { g.dispose(); } catch { /* 已释放 */ } });
+      term.loadAddon(g);
+      webgl = g;
+    } catch { webgl = undefined; /* 无 WebGL 环境，保持默认渲染器 */ }
+    termReady = true;
     requestAnimationFrame(() => {
       doFit();
       term?.focus();
@@ -407,10 +444,24 @@
     <div class="term" bind:this={termHost}></div>
   </div>
   {#if showSftp}
-    <div class="sftp-side" class:wide={sftpWide}>
+    <div class="sftp-side" style:width={`${sftpW}px`}>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+      <div
+        class="sftp-grip"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖动调整面板宽度"
+        tabindex="0"
+        title="拖动调整宽度"
+        onpointerdown={startSftpResize}
+        onkeydown={(e) => {
+          if (e.key === 'ArrowLeft') { sftpW = clampSftpW(sftpW + 40); e.preventDefault(); }
+          else if (e.key === 'ArrowRight') { sftpW = clampSftpW(sftpW - 40); e.preventDefault(); }
+        }}
+      ></div>
       <div class="sftp-head">
         <span>SFTP 文件</span>
-        <button onmousedown={noFocus} onclick={() => sftpWide = !sftpWide} title="显示/隐藏权限与所有者两列">{sftpWide ? '精简' : '详情'}</button>
+        <button onmousedown={noFocus} onclick={toggleSftpCols} title="显示/隐藏权限与所有者两列">{sftpWide ? '精简' : '详情'}</button>
         <button onmousedown={noFocus} onclick={() => showSftp = false} aria-label="关闭文件面板">✕</button>
       </div>
       <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} wide={sftpWide} />
@@ -475,9 +526,10 @@
   .findbar button { padding: 2px 10px; }
   /* 面板让开图标列（30px）+ 4px 缝，否则盖住图标右半边 */
   .sftp-side { position: absolute; right: 34px; top: 0; bottom: 0; width: 580px; min-width: 420px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 20; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
+  .sftp-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 1; }
+  .sftp-grip:hover, .sftp-grip:focus-visible { background: #8ab4f855; outline: none; }
   .sftp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
   .sftp-head span { flex: 1; }
-  .sftp-side.wide { width: 980px; }
   .sftp-head button { background: none; border: none; color: #999; cursor: pointer; }
   .ptool { width: 100%; box-sizing: border-box; text-align: center; background: #222c; border: 1px solid #3a3a3a; color: #8ab4f8; cursor: pointer; border-radius: 6px; padding: 3px 0; font-size: 13px; }
   .ptool.open { color: #101010; background: #8ab4f8; }

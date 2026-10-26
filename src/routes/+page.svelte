@@ -66,7 +66,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; minContrast: number };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -78,6 +78,8 @@
   let settingsLoaded = $state(false);
   let collapsedFolders = $state<string[]>([]);
   let prefCtrlEnter = $state('newline');
+  let prefPalette = $state('tango');
+  let prefMinContrast = $state(1);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -88,6 +90,7 @@
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
+        palette: prefPalette, minContrast: prefMinContrast,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -485,6 +488,8 @@
       prefContextMenu = s.contextMenu;
       collapsedFolders = s.collapsedFolders ?? [];
       prefCtrlEnter = s.ctrlEnter || 'newline';
+      prefPalette = s.palette || 'tango';
+      prefMinContrast = s.minContrast || 1;
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -634,6 +639,8 @@
                  {fontFamily}
                  active={i === activeIdx}
                  {fontSize}
+                 {prefPalette}
+                 {prefMinContrast}
                  {prefCopyOnSelect}
                  {prefConfirmMultiLine}
                  prefContextMenu={prefContextMenu}
@@ -701,6 +708,23 @@
             </datalist>
           </div>
           <div class="hint">字体需系统已安装（如 MesloLGS NF），可直接输入名称；改动即时生效并保存</div>
+          <div class="srow">
+            <span class="lbl">配色</span>
+            <select class="ctlsel" bind:value={prefPalette} onchange={saveSettingsSoon}>
+              <option value="tango">默认（Tango，绿/黄/蓝偏暗）</option>
+              <option value="xterm">xterm 经典（更亮更饱和，蓝偏深）</option>
+              <option value="high">高对比（暗色整体提亮）</option>
+            </select>
+          </div>
+          <div class="srow">
+            <span class="lbl">对比度</span>
+            <select class="ctlsel" bind:value={prefMinContrast} onchange={saveSettingsSoon}>
+              <option value={1}>不增强（原色）</option>
+              <option value={4.5}>增强（WCAG AA 4.5）</option>
+              <option value={7}>很强（WCAG AAA 7）</option>
+            </select>
+          </div>
+          <div class="hint">对比度会按背景把偏暗的前景色自动提亮（含 256 色/真彩应用），弱屏和可视角度差的屏建议选 AA；配色与对比度可叠加。</div>
         </div>
       {/if}
     </div>

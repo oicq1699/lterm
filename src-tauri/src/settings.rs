@@ -18,6 +18,10 @@ pub struct Settings {
     pub collapsed_folders: Vec<String>,
     /// Ctrl+Enter 发送什么：newline=等价 Alt+Enter（多数 TUI 的换行键）/ csiu=Kitty 编码 / same=不拦截（原样 Enter）
     pub ctrl_enter: String,
+    /// ANSI 调色板：tango=xterm.js 默认 / xterm=与 xterm(1) 一致 / high=暗背景高对比
+    pub palette: String,
+    /// 文字与背景的最小对比度（WCAG），1=不增强，4.5=AA，7=AAA
+    pub min_contrast: f64,
 }
 
 impl Default for Settings {
@@ -31,6 +35,8 @@ impl Default for Settings {
             context_menu: true,
             collapsed_folders: Vec::new(),
             ctrl_enter: "newline".into(),
+            palette: "tango".into(),
+            min_contrast: 1.0,
         }
     }
 }
@@ -86,6 +92,8 @@ mod tests {
         let st = AppSettings::load(&dir).unwrap();
         assert_eq!(st.inner.font_size, 16);
         assert_eq!(st.inner.ctrl_enter, "newline", "老配置缺字段应取默认值");
+        assert_eq!(st.inner.palette, "tango", "老配置缺 palette 应取默认值");
+        assert_eq!(st.inner.min_contrast, 1.0, "老配置缺 minContrast 应取 1（不增强）");
 
         let mut s = st.inner.clone();
         s.ctrl_enter = "same".into();
