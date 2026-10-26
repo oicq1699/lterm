@@ -736,12 +736,12 @@
             <span class="lbl">增亮</span>
             <select class="ctlsel" bind:value={prefBright} onchange={saveSettingsSoon}>
               <option value={0}>关</option>
-              <option value={1}>弱（×1.1）</option>
-              <option value={2}>中（×1.2）</option>
-              <option value={3}>强（×1.35）</option>
+              <option value={1}>弱（γ1.15）</option>
+              <option value={2}>中（γ1.3）</option>
+              <option value={3}>强（γ1.5）</option>
             </select>
           </div>
-          <div class="hint">增亮是整块终端画面做亮度缩放，16 色/256 色/真彩/淡色文字都会被抬起来；背景也会略微变亮。上面两个设置管不到的真彩输出，用它兜底。</div>
+          <div class="hint">增亮直接把配色表里的颜色值整体乘亮（含默认前景），弱屏和可视角度差的屏提升明显。程序自己写死的真彩不在这张表里，那种输出请用上面的「对比度」抬。</div>
           <div class="srow">
             <label><input type="checkbox" bind:checked={prefTruecolor} onchange={saveSettingsSoon} /> 向远端请求真彩（只发 COLORTERM=truecolor，TERM 仍为 xterm-256color）</label>
           </div>

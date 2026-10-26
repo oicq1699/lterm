@@ -28,14 +28,31 @@ export const PALETTES = {
 
 export type PaletteKey = keyof typeof PALETTES;
 
-export function termTheme(key: string) {
+/**
+ * 增亮直接作用在颜色值上，不用 CSS filter：filter 会让合成器重新读取 WebGL 画布，
+ * 而 xterm 的 WebGL 渲染器默认不保留绘制缓冲区，读回来就是脏帧（整屏花屏）。
+ * 用伽马提升而不是乘系数：乘系数会把已经很亮的颜色顶到 255、色相跟着歪（浅蓝变青、前景洗白），
+ * 伽马是暗色抬得多、亮色几乎不动。
+ */
+const GAMMA = [1, 1.15, 1.3, 1.5];
+
+function boost(css: string, g: number) {
+  if (g === 1) return css;
+  const n = parseInt(css.slice(1), 16);
+  return '#' + [16, 8, 0]
+    .map((s) => Math.round(255 * Math.pow(((n >> s) & 0xff) / 255, 1 / g)).toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export function termTheme(key: string, bright = 0) {
   const p = PALETTES[key as PaletteKey] ?? PALETTES.tango;
+  const g = GAMMA[bright] ?? 1;
   const theme: Record<string, string> = {
     background: '#101010',
-    foreground: p.foreground,
+    foreground: boost(p.foreground, g),
     cursor: '#7fd1b9',
     selectionBackground: '#2d4f60',
   };
-  p.ansi.forEach((c, i) => { theme[ANSI_KEYS[i]] = c; });
+  p.ansi.forEach((c, i) => { theme[ANSI_KEYS[i]] = boost(c, g); });
   return theme;
 }

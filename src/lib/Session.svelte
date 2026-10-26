@@ -30,7 +30,7 @@
     prefPalette: string;
     /** 最小对比度（WCAG），1=关闭 */
     prefMinContrast: number;
-    /** 整体增亮档位 0..3，走 CSS filter，对 16 色/256 色/真彩/淡色文字一律生效 */
+    /** 增亮档位 0..3，直接把配色表数值乘亮 */
     prefBright: number;
     prefCopyOnSelect: boolean;
     prefConfirmMultiLine: boolean;
@@ -52,12 +52,8 @@
     prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
 
-  const BRIGHT = ['none', 'brightness(1.1)', 'brightness(1.2)', 'brightness(1.35)'];
-  const brightFilter = $derived(BRIGHT[prefBright] ?? 'none');
-
   let term: Terminal | undefined;
   let termReady = $state(false);
-  let webgl: WebglAddon | undefined;
   let fit: FitAddon | undefined;
   let searchAddon: SearchAddon | undefined;
   let unlistenAll: UnlistenFn[] = [];
@@ -176,12 +172,18 @@
   }
   $effect(() => { if (showFwd) void refreshForwards(); });
 
-  // 配色/对比度改动即时作用到已开着的终端（WebGL 的图集要清掉才会用新色重绘）
+  // 配色/对比度/增亮改动即时作用到已开着的终端。
+  // 不要在这里再手动 clearTextureAtlas()：xterm 的 WebGL 渲染器自己监听 option/theme 变化并重建图集，
+  // 额外清一次会和它当帧的重绘撞车，表现为整屏花屏。
+  let appliedTheme = '';
   $effect(() => {
     if (!termReady) return;
-    term!.options.theme = termTheme(prefPalette);
+    const key = `${prefPalette}:${prefBright}`;
+    if (key !== appliedTheme) {
+      appliedTheme = key;
+      term!.options.theme = termTheme(prefPalette, prefBright);
+    }
     term!.options.minimumContrastRatio = prefMinContrast;
-    try { webgl?.clearTextureAtlas(); } catch { /* 渲染器已降级 */ }
   });
 
   onMount(async () => {
@@ -191,7 +193,7 @@
       scrollback: 10000,
       cursorBlink: true,
       allowProposedApi: true,
-      theme: termTheme(prefPalette),
+      theme: termTheme(prefPalette, prefBright),
       minimumContrastRatio: prefMinContrast,
     });
     fit = new FitAddon();
@@ -312,8 +314,7 @@
       const g = new WebglAddon();
       g.onContextLoss(() => { try { g.dispose(); } catch { /* 已释放 */ } });
       term.loadAddon(g);
-      webgl = g;
-    } catch { webgl = undefined; /* 无 WebGL 环境，保持默认渲染器 */ }
+    } catch { /* 无 WebGL 环境，保持默认渲染器 */ }
     termReady = true;
     requestAnimationFrame(() => {
       doFit();
@@ -447,7 +448,7 @@
         <button onclick={closeSearch}>✕</button>
       </div>
     {/if}
-    <div class="term" bind:this={termHost} style:filter={brightFilter}></div>
+    <div class="term" bind:this={termHost}></div>
   </div>
   {#if showSftp}
     <div class="sftp-side" style:width={`${sftpW}px`}>
