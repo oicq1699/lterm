@@ -5,6 +5,7 @@
   import Session from '$lib/Session.svelte';
   import Icon from '$lib/Icon.svelte';
   import { ICON_NAMES, normalizeIcon, iconPaths } from '$lib/icons';
+  import { PALETTE_LABELS } from '$lib/termPalette';
 
   type RdpOptions = {
     sec: 'auto' | 'nla' | 'weak' | 'tls' | 'legacy';
@@ -66,7 +67,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; minContrast: number; truecolor: boolean; bright: number };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -79,8 +80,6 @@
   let collapsedFolders = $state<string[]>([]);
   let prefCtrlEnter = $state('newline');
   let prefPalette = $state('tango');
-  let prefMinContrast = $state(1);
-  let prefTruecolor = $state(false);
   let prefBright = $state(0);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -92,8 +91,7 @@
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
-        palette: prefPalette, minContrast: prefMinContrast,
-        truecolor: prefTruecolor, bright: prefBright,
+        palette: prefPalette, bright: prefBright,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -349,7 +347,6 @@
     try {
       const sid = await invoke<string>('connect', {
         profileId: p.id, password: pwMap[p.id] ?? null, proxyPasswords: pwMap, cols, rows,
-        truecolor: prefTruecolor,
       });
       tabs = [...tabs, { sid, profile: p, alive: true, password: pwMap[p.id] ?? null }];
       activeIdx = tabs.length - 1;
@@ -493,8 +490,6 @@
       collapsedFolders = s.collapsedFolders ?? [];
       prefCtrlEnter = s.ctrlEnter || 'newline';
       prefPalette = s.palette || 'tango';
-      prefMinContrast = s.minContrast || 1;
-      prefTruecolor = !!s.truecolor;
       prefBright = s.bright || 0;
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
@@ -646,7 +641,6 @@
                  active={i === activeIdx}
                  {fontSize}
                  {prefPalette}
-                 {prefMinContrast}
                  {prefBright}
                  {prefCopyOnSelect}
                  {prefConfirmMultiLine}
@@ -718,20 +712,11 @@
           <div class="srow">
             <span class="lbl">配色</span>
             <select class="ctlsel" bind:value={prefPalette} onchange={saveSettingsSoon}>
-              <option value="tango">默认（Tango，绿/黄/蓝偏暗）</option>
-              <option value="xterm">xterm 经典（更亮更饱和，蓝偏深）</option>
-              <option value="high">高对比（暗色整体提亮）</option>
+              {#each Object.entries(PALETTE_LABELS) as [key, label] (key)}
+                <option value={key}>{label}</option>
+              {/each}
             </select>
           </div>
-          <div class="srow">
-            <span class="lbl">对比度</span>
-            <select class="ctlsel" bind:value={prefMinContrast} onchange={saveSettingsSoon}>
-              <option value={1}>不增强（原色）</option>
-              <option value={4.5}>增强（WCAG AA 4.5）</option>
-              <option value={7}>很强（WCAG AAA 7）</option>
-            </select>
-          </div>
-          <div class="hint">对比度会按背景把偏暗的前景色自动提亮（含 256 色/真彩应用），弱屏和可视角度差的屏建议选 AA；配色与对比度可叠加。</div>
           <div class="srow">
             <span class="lbl">增亮</span>
             <select class="ctlsel" bind:value={prefBright} onchange={saveSettingsSoon}>
@@ -741,11 +726,7 @@
               <option value={3}>强（γ1.5）</option>
             </select>
           </div>
-          <div class="hint">增亮直接把配色表里的颜色值整体乘亮（含默认前景），弱屏和可视角度差的屏提升明显。程序自己写死的真彩不在这张表里，那种输出请用上面的「对比度」抬。</div>
-          <div class="srow">
-            <label><input type="checkbox" bind:checked={prefTruecolor} onchange={saveSettingsSoon} /> 向远端请求真彩（只发 COLORTERM=truecolor，TERM 仍为 xterm-256color）</label>
-          </div>
-          <div class="hint">开启后<strong>新建</strong>的连接生效。sshd 默认 <code>AcceptEnv</code> 只放行 LANG/LC_*，会把 COLORTERM 丢掉 —— 那种机器上要么服务端加 <code>AcceptEnv COLORTERM</code>，要么在远端 shell 里 <code>export COLORTERM=truecolor</code>。不要靠改 TERM 声明真彩：xterm-24bit 等名字在远端多半没有对应 terminfo，readline 取不到 kbs/el，退格会变成打空格。</div>
+          <div class="hint">配色换的是那 16 个 ANSI 色（含背景），改完即时生效。程序自己写死的真彩输出不走这张表，只能靠增亮以外的手段，暂不支持。</div>
         </div>
       {/if}
     </div>
@@ -1036,7 +1017,7 @@
   .gear { background: none; border: none; color: #999; cursor: pointer; font-size: 12px; }
   .icon { border: none; background: none; color: #666; cursor: pointer; padding: 0 6px; }
   .icon:hover { color: #8ab4f8; }
-  .settings { position: absolute; bottom: 28px; right: 8px; background: #252525; border: 1px solid #444; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; z-index: 10; width: 380px; color: #ccc; }
+  .settings { position: absolute; bottom: 28px; right: 8px; max-height: calc(100vh - 56px); overflow-y: auto; background: #252525; border: 1px solid #444; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; z-index: 10; width: 380px; color: #ccc; }
   .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
   .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; flex-wrap: wrap; }
   .srow .lbl { width: auto; min-width: 30px; color: #aaa; flex-shrink: 0; }

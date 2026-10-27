@@ -18,13 +18,9 @@ pub struct Settings {
     pub collapsed_folders: Vec<String>,
     /// Ctrl+Enter 发送什么：newline=等价 Alt+Enter（多数 TUI 的换行键）/ csiu=Kitty 编码 / same=不拦截（原样 Enter）
     pub ctrl_enter: String,
-    /// ANSI 调色板：tango=xterm.js 默认 / xterm=与 xterm(1) 一致 / high=暗背景高对比
+    /// ANSI 调色板名，见前端 lib/termPalette.ts；未知名字前端会回落到 tango
     pub palette: String,
-    /// 文字与背景的最小对比度（WCAG），1=不增强，4.5=AA，7=AAA
-    pub min_contrast: f64,
-    /// 向远端请求 COLORTERM=truecolor（TERM 仍是 xterm-256color，避免 terminfo 查不到）
-    pub truecolor: bool,
-    /// 终端整体增亮档位 0=关 1..3，作用于所有颜色（含 256 色/真彩/淡色文字）
+    /// 增亮档位 0=关 1..3，直接把配色表数值做伽马提升
     pub bright: u32,
 }
 
@@ -40,8 +36,6 @@ impl Default for Settings {
             collapsed_folders: Vec::new(),
             ctrl_enter: "newline".into(),
             palette: "tango".into(),
-            min_contrast: 1.0,
-            truecolor: false,
             bright: 0,
         }
     }
@@ -99,8 +93,6 @@ mod tests {
         assert_eq!(st.inner.font_size, 16);
         assert_eq!(st.inner.ctrl_enter, "newline", "老配置缺字段应取默认值");
         assert_eq!(st.inner.palette, "tango", "老配置缺 palette 应取默认值");
-        assert_eq!(st.inner.min_contrast, 1.0, "老配置缺 minContrast 应取 1（不增强）");
-        assert!(!st.inner.truecolor, "真彩默认关：远端未必有 xterm-24bit 的 terminfo");
         assert_eq!(st.inner.bright, 0);
 
         let mut s = st.inner.clone();

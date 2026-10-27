@@ -26,10 +26,8 @@
     fontFamily: string;
     active: boolean;
     fontSize: number;
-    /** ANSI 调色板：tango | xterm | high */
+    /** ANSI 调色板：tango | xterm | high | campbell | gruvbox | dracula | solarized | catppuccin */
     prefPalette: string;
-    /** 最小对比度（WCAG），1=关闭 */
-    prefMinContrast: number;
     /** 增亮档位 0..3，直接把配色表数值乘亮 */
     prefBright: number;
     prefCopyOnSelect: boolean;
@@ -46,7 +44,7 @@
     registerApi: (sid: string, api: { writeLine: (t: string) => void }) => void;
   };
   let {
-    sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefPalette, prefMinContrast,
+    sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefPalette,
     prefBright,
     prefCopyOnSelect, prefConfirmMultiLine,
     prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
@@ -172,18 +170,16 @@
   }
   $effect(() => { if (showFwd) void refreshForwards(); });
 
-  // 配色/对比度/增亮改动即时作用到已开着的终端。
+  // 配色/增亮改动即时作用到已开着的终端。
   // 不要在这里再手动 clearTextureAtlas()：xterm 的 WebGL 渲染器自己监听 option/theme 变化并重建图集，
   // 额外清一次会和它当帧的重绘撞车，表现为整屏花屏。
   let appliedTheme = '';
   $effect(() => {
     if (!termReady) return;
     const key = `${prefPalette}:${prefBright}`;
-    if (key !== appliedTheme) {
-      appliedTheme = key;
-      term!.options.theme = termTheme(prefPalette, prefBright);
-    }
-    term!.options.minimumContrastRatio = prefMinContrast;
+    if (key === appliedTheme) return;
+    appliedTheme = key;
+    term!.options.theme = termTheme(prefPalette, prefBright);
   });
 
   onMount(async () => {
@@ -194,7 +190,6 @@
       cursorBlink: true,
       allowProposedApi: true,
       theme: termTheme(prefPalette, prefBright),
-      minimumContrastRatio: prefMinContrast,
     });
     fit = new FitAddon();
     searchAddon = new SearchAddon();

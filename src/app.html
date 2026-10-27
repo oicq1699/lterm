@@ -4,7 +4,12 @@
     <meta charset="utf-8" />
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>:root { color-scheme: dark; }</style>
+    <style>
+      :root { color-scheme: dark; }
+      /* 桌面窗口不该能滚动文档：body 的 UA 默认 8px 边距加上 main 的 100vh 就会冒出滚动条，
+         任何一个元素溢出也都会再冒一条，这里一次性封死 */
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    </style>
     <title>Tauri + SvelteKit + Typescript App</title>
     %sveltekit.head%
   </head>
