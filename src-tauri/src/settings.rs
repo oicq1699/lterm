@@ -22,6 +22,8 @@ pub struct Settings {
     pub palette: String,
     /// 增亮档位 0=关 1..3，直接把配色表数值做伽马提升
     pub bright: u32,
+    /// 关闭仍在线的会话标签前弹确认
+    pub confirm_close: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +39,7 @@ impl Default for Settings {
             ctrl_enter: "newline".into(),
             palette: "tango".into(),
             bright: 0,
+            confirm_close: true,
         }
     }
 }
@@ -94,6 +97,7 @@ mod tests {
         assert_eq!(st.inner.ctrl_enter, "newline", "老配置缺字段应取默认值");
         assert_eq!(st.inner.palette, "tango", "老配置缺 palette 应取默认值");
         assert_eq!(st.inner.bright, 0);
+        assert!(st.inner.confirm_close, "老配置缺 confirmClose 应默认弹确认");
 
         let mut s = st.inner.clone();
         s.ctrl_enter = "same".into();

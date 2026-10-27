@@ -65,7 +65,12 @@ pub async fn connect_chain(
     let mut guards: Vec<JumpGuard> = Vec::new();
     let mut prev: Option<client::Handle<LtermHandler>> = None;
     for hop in &chain {
-        let config = Arc::new(client::Config::default());
+        let config = Arc::new(client::Config {
+            // 空闲时定期发 keepalive@openssh.com：sshd 的 ClientAliveInterval、中间 NAT/防火墙的
+            // 会话老化都会掐掉长时间没字节的连接，这个心跳负责续命（每一跳都发）
+            keepalive_interval: Some(std::time::Duration::from_secs(30)),
+            ..client::Config::default()
+        });
         let handler = LtermHandler::for_host(app.clone(), hop);
         let mut handle = match prev.take() {
             None => {

@@ -67,7 +67,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -81,6 +81,7 @@
   let prefCtrlEnter = $state('newline');
   let prefPalette = $state('tango');
   let prefBright = $state(0);
+  let prefConfirmClose = $state(true);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -91,7 +92,7 @@
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
-        palette: prefPalette, bright: prefBright,
+        palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -390,6 +391,7 @@
   async function closeTab(i: number) {
     const t = tabs[i];
     if (!t) return;
+    if (t.alive && prefConfirmClose && !confirm(`断开 ${t.profile.username}@${t.profile.host}？传输中的任务会一起中断。`)) return;
     if (t.alive) {
       try { await invoke('disconnect', { id: t.sid }); } catch { /* 已断开 */ }
     }
@@ -491,6 +493,7 @@
       prefCtrlEnter = s.ctrlEnter || 'newline';
       prefPalette = s.palette || 'tango';
       prefBright = s.bright || 0;
+      prefConfirmClose = s.confirmClose !== false;
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -683,6 +686,7 @@
             <label><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
             <label><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
             <label><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
+            <label><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认</label>
           </div>
           <div class="srow">
             <span class="lbl">Ctrl+Enter</span>
