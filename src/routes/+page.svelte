@@ -1021,7 +1021,7 @@
   .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
   .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; flex-wrap: wrap; }
   .srow .lbl { width: auto; min-width: 30px; color: #aaa; flex-shrink: 0; }
-  .srow .ctlsel { padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
+  .srow .ctlsel { flex: 1; min-width: 0; max-width: 100%; padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .srow .ctlsel option { background: #2a2a2a; color: #eee; }
   .srow .num { width: 26px; text-align: center; }
   .srow .fontin { flex: 1; min-width: 100px; padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }

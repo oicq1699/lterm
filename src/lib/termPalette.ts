@@ -44,13 +44,61 @@ export const PALETTES: Record<string, Scheme> = {
   },
   solarized: {
     background: '#002b36', foreground: '#93a1a1',
+    // Solarized 官方的 brightBlack 是 base03=背景色（灰字会完全看不见），这里改用 base00
     ansi: ['#073642', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#eee8d5',
-      '#002b36', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3'],
+      '#657b83', '#cb4b16', '#586e75', '#657b83', '#839496', '#6c71c4', '#93a1a1', '#fdf6e3'],
   },
   catppuccin: {
     background: '#1e1e2e', foreground: '#cdd6f4',
     ansi: ['#45475a', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2ef', '#94e2d5', '#bac2de',
       '#585b70', '#f38ba8', '#a6e3a1', '#f9e2af', '#89b4fa', '#f5c2ef', '#94e2d5', '#a6adc8'],
+  },
+  // 手工调的暖色系：纯黑底，色相整体往琥珀/橙/金靠，黑文字抬成暖棕保证还能看见
+  ember: {
+    background: '#000000', foreground: '#f2e7d5',
+    ansi: ['#2b2118', '#ff6b4a', '#b8cc52', '#ffb340', '#6f9bb5', '#ff8fb0', '#7fd1c4', '#f2e7d5',
+      '#6b5b4a', '#ff9070', '#dce88a', '#ffd070', '#9fc2da', '#ffb3c9', '#a8e2d8', '#fff6e3'],
+  },
+  monokai: {
+    background: '#272822', foreground: '#f8f8f2',
+    ansi: ['#272822', '#f92672', '#a6e22e', '#e6db74', '#66d9ef', '#ae81ff', '#78d0e0', '#f8f8f2',
+      '#75715e', '#ff4d88', '#c0f04e', '#f0e68c', '#8ce6f0', '#c9a1ff', '#a0eef5', '#fffef8'],
+  },
+  nord: {
+    background: '#2e3440', foreground: '#d8dee9',
+    ansi: ['#3b4252', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#88c0d0', '#e5e9f0',
+      '#4c566a', '#bf616a', '#a3be8c', '#ebcb8b', '#81a1c1', '#b48ead', '#8fbcbb', '#eceff4'],
+  },
+  onehalf: {
+    background: '#282c34', foreground: '#dcdfe4',
+    ansi: ['#282c34', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#dcdfe4',
+      '#5c6370', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#ffffff'],
+  },
+  tokyo: {
+    background: '#1a1b26', foreground: '#c0caf5',
+    ansi: ['#15161e', '#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff', '#a9b1d6',
+      '#414868', '#f7768e', '#9ece6a', '#e0af68', '#7aa2f7', '#bb9af7', '#7dcfff', '#c0caf5'],
+  },
+  rosepine: {
+    background: '#191724', foreground: '#e0def4',
+    ansi: ['#6e6a86', '#eb6f92', '#31748f', '#f6c177', '#908aa2', '#c4a7e7', '#ebbcba', '#e0def4',
+      '#6e6a86', '#eb6f92', '#31748f', '#f6c177', '#908aa2', '#c4a7e7', '#ebbcba', '#e0def4'],
+  },
+  // 以下三套是手工调的：黑底，分别往暖铜、冷钢、全饱和三个方向拉
+  copper: {
+    background: '#000000', foreground: '#f6d9b0',
+    ansi: ['#3a2a1a', '#e8683a', '#a4b85a', '#f0a03c', '#7f9bb0', '#e08a8a', '#6fb8a8', '#e8cfae',
+      '#7a5c3a', '#ff8f5a', '#c8dd7a', '#ffc266', '#a8c6dc', '#ffb3b3', '#9ce0cf', '#fff0d8'],
+  },
+  steel: {
+    background: '#000000', foreground: '#d6e2ea',
+    ansi: ['#223038', '#d16070', '#6fbf8f', '#d9c06a', '#62a8e0', '#b08cd8', '#5cc4cc', '#c8d6de',
+      '#4a5c68', '#ff7f90', '#8fe0b0', '#f0dc8a', '#8fc4ff', '#cfaef0', '#88e4ec', '#eaf2f8'],
+  },
+  vivid: {
+    background: '#000000', foreground: '#ffffff',
+    ansi: ['#404040', '#ff2d2d', '#2dff5f', '#ffd42d', '#3d7bff', '#ff3dd0', '#2de8ff', '#e6e6e6',
+      '#808080', '#ff6b6b', '#6bff8f', '#ffe873', '#7aa8ff', '#ff7ae4', '#74f2ff', '#ffffff'],
   },
 };
 
@@ -58,11 +106,20 @@ export const PALETTE_LABELS: Record<string, string> = {
   tango: '默认（Tango）',
   xterm: 'xterm 经典',
   high: '高对比',
-  campbell: 'Campbell（VS Code / Windows Terminal）',
+  campbell: 'Campbell（VS Code 默认）',
   gruvbox: 'Gruvbox 暗',
   dracula: 'Dracula',
   solarized: 'Solarized 暗',
   catppuccin: 'Catppuccin Mocha',
+  ember: '琥珀黑（纯黑底 · 暖色阶）',
+  monokai: 'Monokai（暖底高饱和）',
+  nord: 'Nord（冷蓝灰）',
+  onehalf: 'One Half Dark',
+  tokyo: 'Tokyo Night',
+  rosepine: 'Rosé Pine（暖紫）',
+  copper: '铜黑（纯黑底 · 铜橙暖调）',
+  steel: '钢青（纯黑底 · 冷调）',
+  vivid: '全饱和黑（纯黑底 · 最抢眼）',
 };
 
 /**
