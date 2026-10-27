@@ -131,6 +131,7 @@ pub fn run() {
             sftp::local_home,
             dirstate::get_dir_state,
             dirstate::set_dir_state,
+            dirstate::note_transfer_dirs,
             settings::get_settings,
             settings::set_settings,
             clipboard::clipboard_write,

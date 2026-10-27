@@ -11,7 +11,15 @@
     mode?: number | null; uid?: number | null; gid?: number | null;
     user?: string | null; group?: string | null;
   };
-  type Transfer = { id: string; label: string; dir: 'up' | 'down'; done: number; total: number; state: 'run' | 'ok' | 'err'; error?: string };
+  type Transfer = {
+    id: string; label: string; dir: 'up' | 'down'; done: number; total: number; state: 'run' | 'ok' | 'err'; error?: string;
+    /** 发起传输时两侧所在目录，成功后才进历史 */
+    fromLocal: string; fromRemote: string;
+  };
+  type DirState = { local: string | null; remote: string | null; localHist: string[]; remoteHist: string[] };
+
+  const HIST_MAX = 5;
+  const withHist = (list: string[], path: string) => [path, ...list.filter((p) => p !== path)].slice(0, HIST_MAX);
 
   let ready = $state(false);
   let error = $state('');
@@ -22,6 +30,9 @@
   let localSel = $state<Set<string>>(new Set());
   let remoteSel = $state<Set<string>>(new Set());
   let transfers = $state<Transfer[]>([]);
+  let localHist = $state<string[]>([]);
+  let remoteHist = $state<string[]>([]);
+  let openHist = $state<'' | 'local' | 'remote'>('');
   let unlisten: UnlistenFn[] = [];
 
   const fmtSize = (n: number) => n >= 1073741824 ? (n / 1073741824).toFixed(2) + 'G'
@@ -112,7 +123,9 @@
     error = '';
     try {
       await ensureOpen();
-      const st = await invoke<{ local: string | null; remote: string | null }>('get_dir_state', { profileId });
+      const st = await invoke<DirState>('get_dir_state', { profileId });
+      localHist = st.localHist ?? [];
+      remoteHist = st.remoteHist ?? [];
       if (!(st.local && await loadLocal(st.local, true))) {
         await loadLocal(await invoke<string>('local_home'));
       }
@@ -137,12 +150,22 @@
     if (t) {
       t.state = ev.payload.ok ? 'ok' : 'err';
       t.error = ev.payload.error;
-      if (ev.payload.ok) { loadRemote(); }
+      if (ev.payload.ok) {
+        // 传成功才算历史目录，浏览路过不算
+        localHist = withHist(localHist, t.fromLocal);
+        remoteHist = withHist(remoteHist, t.fromRemote);
+        invoke('note_transfer_dirs', { profileId, local: t.fromLocal, remote: t.fromRemote }).catch(() => {});
+        loadRemote();
+      }
     }
   }).then((u) => unlisten.push(u));
 
-  function toggleSel(which: 'local' | 'remote', path: string, e: MouseEvent) {
-    const sel = which === 'local' ? localSel : remoteSel;
+  function pickHist(which: 'local' | 'remote', path: string) {
+    openHist = '';
+    which === 'local' ? loadLocal(path) : loadRemote(path);
+  }
+
+  function toggleSel(which: 'local' | 'remote', path: string, e: MouseEvent) {    const sel = which === 'local' ? localSel : remoteSel;
     const next = new Set(sel);
     if (e.ctrlKey || e.metaKey) { next.has(path) ? next.delete(path) : next.add(path); }
     else { next.clear(); next.add(path); }
@@ -160,7 +183,7 @@
   }
 
   function newTransfer(id: string, dir: 'up' | 'down'): Transfer {
-    const t: Transfer = { id, label: base(id), dir, done: 0, total: 0, state: 'run' };
+    const t: Transfer = { id, label: base(id), dir, done: 0, total: 0, state: 'run', fromLocal: localPath, fromRemote: remotePath };
     transfers = [...transfers.filter((x) => x.id !== id), t];
     return t;
   }
@@ -281,6 +304,17 @@
         <input class="path" value={localPath} aria-label="本地路径"
                onkeydown={(e) => e.key === 'Enter' && loadLocal((e.target as HTMLInputElement).value)} />
         <button onclick={() => loadLocal()} title="刷新">⟳</button>
+        <button class="hbtn" disabled={!localHist.length} title="历史目录（传过的）" aria-label="本地历史目录"
+                onclick={() => openHist = openHist === 'local' ? '' : 'local'}>▾</button>
+        {#if openHist === 'local'}
+          <div class="histscrim" role="presentation" onclick={() => openHist = ''}></div>
+          <ul class="histpop" role="menu" aria-label="本地历史目录">
+            {#each localHist as p (p)}
+              <li role="menuitem" tabindex={0} onclick={() => pickHist('local', p)}
+                  onkeydown={(e) => e.key === 'Enter' && pickHist('local', p)} title={p}>{p}</li>
+            {/each}
+          </ul>
+        {/if}
       </div>
       {#if wide}
         <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
@@ -316,6 +350,17 @@
         <input class="path" value={remotePath} aria-label="远端路径"
                onkeydown={(e) => e.key === 'Enter' && loadRemote((e.target as HTMLInputElement).value)} />
         <button onclick={() => loadRemote()} title="刷新">⟳</button>
+        <button class="hbtn" disabled={!remoteHist.length} title="历史目录（传过的）" aria-label="远端历史目录"
+                onclick={() => openHist = openHist === 'remote' ? '' : 'remote'}>▾</button>
+        {#if openHist === 'remote'}
+          <div class="histscrim" role="presentation" onclick={() => openHist = ''}></div>
+          <ul class="histpop" role="menu" aria-label="远端历史目录">
+            {#each remoteHist as p (p)}
+              <li role="menuitem" tabindex={0} onclick={() => pickHist('remote', p)}
+                  onkeydown={(e) => e.key === 'Enter' && pickHist('remote', p)} title={p}>{p}</li>
+            {/each}
+          </ul>
+        {/if}
       </div>
       {#if wide}
         <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
@@ -377,7 +422,7 @@
   .panes { flex: 1; display: flex; min-height: 0; }
   .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid #2a2a2a; }
   .pane:last-child { border-right: none; }
-  .pathbar { display: flex; gap: 3px; padding: 4px; border-bottom: 1px solid #2a2a2a; align-items: center; }
+  .pathbar { display: flex; gap: 3px; padding: 4px; border-bottom: 1px solid #2a2a2a; align-items: center; position: relative; }
   .tag { color: #8ab4f8; font-size: 11px; }
   .path { flex: 1; min-width: 0; padding: 3px 6px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 11px; }
   .pathbar button, .ops button { padding: 2px 7px; font-size: 11px; border-radius: 4px; border: 1px solid #444; background: #2a2a2a; color: #ccc; cursor: pointer; }
@@ -407,4 +452,14 @@
   .ok { color: #7cc47f; }
   .fail { color: #e57373; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .tr button { padding: 1px 8px; font-size: 11px; }
+  /* 历史目录浮层：.pane ul / .pathbar button 的优先级更高，这里必须带上父级选择器 */
+  .pathbar .hbtn { padding: 2px 6px; }
+  .pathbar .hbtn:disabled { color: #555; cursor: default; }
+  .histscrim { position: fixed; inset: 0; z-index: 30; }
+  .pathbar .histpop { position: absolute; top: 30px; left: 4px; right: 4px; z-index: 31; margin: 0; padding: 2px;
+    list-style: none; background: #232323; border: 1px solid #4a4a4a; border-radius: 6px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, .5); max-height: 190px; overflow-y: auto; }
+  .pathbar .histpop li { display: block; padding: 4px 8px; font-size: 11px; color: #ccc; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pathbar .histpop li:hover, .pathbar .histpop li:focus-visible { background: #2d4f60; outline: none; }
 </style>
