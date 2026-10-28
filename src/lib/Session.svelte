@@ -447,20 +447,16 @@
   </div>
   {#if showSftp}
     <div class="sftp-side" style:width={`${sftpW}px`}>
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
-      <div
+      <button
         class="sftp-grip"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="拖动调整面板宽度"
-        tabindex="0"
+        aria-label="拖动调整面板宽度（也可聚焦后按左右方向键）"
         title="拖动调整宽度"
         onpointerdown={startSftpResize}
         onkeydown={(e) => {
           if (e.key === 'ArrowLeft') { sftpW = clampSftpW(sftpW + 40); e.preventDefault(); }
           else if (e.key === 'ArrowRight') { sftpW = clampSftpW(sftpW - 40); e.preventDefault(); }
         }}
-      ></div>
+      ></button>
       <div class="sftp-head">
         <span>SFTP 文件</span>
         <button onmousedown={noFocus} onclick={toggleSftpCols} title="显示/隐藏权限与所有者两列">{sftpWide ? '精简' : '详情'}</button>
@@ -528,7 +524,8 @@
   .findbar button { padding: 2px 10px; }
   /* 面板让开图标列（30px）+ 4px 缝，否则盖住图标右半边 */
   .sftp-side { position: absolute; right: 34px; top: 0; bottom: 0; width: 580px; min-width: 420px; border-left: 1px solid #333; display: flex; flex-direction: column; background: #161616; z-index: 20; box-shadow: -8px 0 20px rgba(0, 0, 0, 0.4); }
-  .sftp-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 1; }
+  .sftp-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 1;
+    padding: 0; border: none; background: none; }
   .sftp-grip:hover, .sftp-grip:focus-visible { background: #8ab4f855; outline: none; }
   .sftp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
   .sftp-head span { flex: 1; }
