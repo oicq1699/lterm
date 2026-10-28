@@ -51,7 +51,7 @@
     return kind + s;
   };
   const kindOf = (en: Entry) => en.is_link ? 'l' : en.is_dir ? 'd' : '-';
-  const iconOf = (en: Entry) => en.is_link ? '🔗' : en.is_dir ? '📁' : '📄';
+  const iconOf = (en: Entry) => en.is_dir ? '📁' : '📄';
   const linkTip = (en: Entry) => '软链接' + (en.is_dir ? '（指向目录）' : '（目标类型未能确认，双击会先按目录尝试）');
   const fmtOctal = (mode: number | null | undefined) => (mode == null ? '' : '0' + (mode & 0o7777).toString(8).padStart(3, '0'));
   const fmtOwner = (en: Entry) => en.user ?? (en.uid != null ? String(en.uid) : '');
@@ -353,7 +353,7 @@
               onclick={(e) => toggleSel('local', en.path, e)}
               onkeydown={(e) => e.key === 'Enter' && entryDbl('local', en)}
               ondblclick={() => entryDbl('local', en)}>
-            <span class="ico" title={en.is_link ? linkTip(en) : undefined}>{iconOf(en)}</span>
+            <span class="ico" class:link={en.is_link} title={en.is_link ? linkTip(en) : undefined}>{iconOf(en)}</span>
             {#if wide}
               <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, kindOf(en))}</span>
               <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
@@ -399,7 +399,7 @@
               onclick={(e) => toggleSel('remote', en.path, e)}
               onkeydown={(e) => e.key === 'Enter' && entryDbl('remote', en)}
               ondblclick={() => entryDbl('remote', en)}>
-            <span class="ico" title={en.is_link ? linkTip(en) : undefined}>{iconOf(en)}</span>
+            <span class="ico" class:link={en.is_link} title={en.is_link ? linkTip(en) : undefined}>{iconOf(en)}</span>
             {#if wide}
               <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, kindOf(en))}</span>
               <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
@@ -460,6 +460,10 @@
   .pane li.selected { background: #2d4f60; }
   .pane li:focus-visible { outline: 2px solid #8ab4f8; outline-offset: -2px; }
   .ico { width: 14px; flex-shrink: 0; }
+  /* 软链接：不换图标，在类型图标右下角叠一个小箭头角标，目录/文件都适用 */
+  .ico.link { position: relative; }
+  .ico.link::after { content: '↗\00FE0E'; position: absolute; right: -2px; bottom: -2px;
+    font-size: 9px; line-height: 1; color: #8ab4f8; }
   .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fsize { width: 52px; flex-shrink: 0; text-align: right; color: #888; }
   .fperm { width: 78px; color: #86b386; font-family: monospace; flex-shrink: 0; }
