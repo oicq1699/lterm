@@ -26,6 +26,8 @@ pub struct Settings {
     pub confirm_close: bool,
     /// 服务器列表紧凑模式：一行只显示标题，操作走右键菜单
     pub compact_list: bool,
+    /// SFTP 路径框历史目录的下拉条数
+    pub sftp_hist: u32,
 }
 
 impl Default for Settings {
@@ -43,6 +45,7 @@ impl Default for Settings {
             bright: 0,
             confirm_close: true,
             compact_list: false,
+            sftp_hist: 8,
         }
     }
 }

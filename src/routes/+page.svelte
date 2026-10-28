@@ -67,7 +67,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -84,6 +84,7 @@
   let dataDir = $state('');
   let prefConfirmClose = $state(true);
   let prefCompactList = $state(false);
+  let prefSftpHist = $state(8);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -95,6 +96,7 @@
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
+        sftpHist: prefSftpHist,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -501,6 +503,7 @@
       prefBright = s.bright || 0;
       prefConfirmClose = s.confirmClose !== false;
       prefCompactList = !!s.compactList;
+      prefSftpHist = Math.min(30, Math.max(3, s.sftpHist || 8));
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -534,6 +537,12 @@
     window.removeEventListener('keydown', onWindowKeydown);
     for (const u of unlistenAll) u();
   });
+
+  function setSftpHist(e: Event) {
+    const v = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(v)) prefSftpHist = Math.min(30, Math.max(3, Math.round(v)));
+    saveSettingsSoon();
+  }
 
   function closeSettings() {
     showSettings = false;
@@ -706,6 +715,7 @@
                  {fontSize}
                  {prefPalette}
                  {prefBright}
+                 {prefSftpHist}
                  {prefCopyOnSelect}
                  {prefConfirmMultiLine}
                  prefContextMenu={prefContextMenu}
@@ -802,6 +812,12 @@
         <label class="ck"><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
         <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认</label>
         <label class="ck"><input type="checkbox" bind:checked={prefCompactList} onchange={saveSettingsSoon} /> 服务器列表紧凑模式（每行只显示标题，编辑/复制/删除走右键菜单）</label>
+        <div class="srow">
+          <span class="lbl">SFTP 历史</span>
+          <input class="numin" type="number" min="3" max="30" step="1" value={prefSftpHist} aria-label="路径框历史目录条数"
+                 onchange={setSftpHist} />
+          <span class="unit">条（3~30）· 路径框 ▾ 里记多少个传过的目录</span>
+        </div>
 
         <div class="sec">键盘</div>
         <div class="srow">
@@ -1126,6 +1142,8 @@
   .srvctx .ctxi.danger { color: #e58383; }
   .srvctx .ctxi.danger:hover { background: #4a1d1d; color: #f0a0a0; }
   .srvctx .ctxsep { height: 1px; margin: 3px 6px; background: #3a3a3a; }
+  .setdlg .numin { width: 64px; padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; font-size: 13px; }
+  .setdlg .unit { color: #888; font-size: 11px; }
   .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; flex-wrap: wrap; }
   .srow .lbl { width: auto; min-width: 30px; color: #aaa; flex-shrink: 0; }
   .srow .ctlsel { flex: 1; min-width: 0; max-width: 100%; padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }

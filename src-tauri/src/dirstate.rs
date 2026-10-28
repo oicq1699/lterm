@@ -5,9 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
 
-/// 每侧记住的历史目录条数
-const HIST_MAX: usize = 5;
-
 #[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DirPair {
@@ -57,16 +54,18 @@ impl DirState {
         self.persist()
     }
 
-    /// 记一笔历史目录：去重、最新在前、只留 HIST_MAX 条
-    pub fn push_hist(&mut self, profile_id: &str, remote_side: bool, path: &str) -> Result<(), String> {
-        if path.is_empty() {
-            return Ok(());
-        }
+    /// 记一笔历史目录：去重、最新在前、只留 keep 条（keep 由设置里的「SFTP 历史条数」给）
+    pub fn push_hist(&mut self, profile_id: &str, remote_side: bool, path: &str, keep: usize) -> Result<(), String> {
+        let keep = keep.clamp(1, 50);
         let e = self.dirs.entry(profile_id.to_string()).or_default();
-        let list = if remote_side { &mut e.remote_hist } else { &mut e.local_hist };
-        list.retain(|p| p != path);
-        list.insert(0, path.to_string());
-        list.truncate(HIST_MAX);
+        if !path.is_empty() {
+            let list = if remote_side { &mut e.remote_hist } else { &mut e.local_hist };
+            list.retain(|p| p != path);
+            list.insert(0, path.to_string());
+        }
+        // 两侧都按新上限裁一遍：设置里把条数调小时，旧记录会跟着收起来
+        e.local_hist.truncate(keep);
+        e.remote_hist.truncate(keep);
         self.persist()
     }
 }
@@ -93,10 +92,12 @@ pub fn note_transfer_dirs(
     profile_id: String,
     local: String,
     remote: String,
+    keep: u32,
 ) -> Result<(), String> {
     let mut st = store.lock().unwrap();
-    st.push_hist(&profile_id, false, &local)?;
-    st.push_hist(&profile_id, true, &remote)
+    let keep = keep as usize;
+    st.push_hist(&profile_id, false, &local, keep)?;
+    st.push_hist(&profile_id, true, &remote, keep)
 }
 
 #[cfg(test)]
@@ -126,13 +127,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut st = DirState::load(&dir).unwrap();
         for p in ["/a", "/b", "/a", "/c", "/d", "/e", "/f"] {
-            st.push_hist("p1", true, p).unwrap();
+            st.push_hist("p1", true, p, 5).unwrap();
         }
-        st.push_hist("p1", false, "").unwrap(); // 空路径不入历史
+        st.push_hist("p1", false, "", 5).unwrap(); // 空路径不入历史
         let reloaded = DirState::load(&dir).unwrap();
         let e = reloaded.get("p1");
         assert_eq!(e.remote_hist, vec!["/f", "/e", "/d", "/c", "/a"], "最新在前、去重、只留 5 条");
         assert_eq!(e.local_hist, Vec::<String>::new());
+        // 上限调小要能把两侧旧记录一起收起来
+        st.push_hist("p1", true, "/g", 2).unwrap();
+        let shrunk = DirState::load(&dir).unwrap();
+        assert_eq!(shrunk.get("p1").remote_hist, vec!["/g", "/f"], "按新上限裁剪");
         // 老 state.json 没有历史字段也要能加载
         std::fs::write(dir.join("state.json"), r#"{"old":{"local":"/tmp","remote":"/"}}"#).unwrap();
         let legacy = DirState::load(&dir).unwrap();

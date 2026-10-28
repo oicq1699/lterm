@@ -3,8 +3,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-  type Props = { sid: string; profileId: string; password: string | null; wide?: boolean };
-  let { sid, profileId, password, wide = false }: Props = $props();
+  type Props = { sid: string; profileId: string; password: string | null; wide?: boolean; histMax?: number };
+  let { sid, profileId, password, wide = false, histMax = 8 }: Props = $props();
 
   type Entry = {
     name: string; path: string; size: number; is_dir: boolean; modified: number;
@@ -20,8 +20,8 @@
   };
   type DirState = { local: string | null; remote: string | null; localHist: string[]; remoteHist: string[] };
 
-  const HIST_MAX = 5;
-  const withHist = (list: string[], path: string) => [path, ...list.filter((p) => p !== path)].slice(0, HIST_MAX);
+  const cap = () => Math.min(30, Math.max(1, Math.round(histMax) || 8));
+  const withHist = (list: string[], path: string) => [path, ...list.filter((p) => p !== path)].slice(0, cap());
 
   let ready = $state(false);
   let error = $state('');
@@ -159,7 +159,7 @@
         // 传成功才算历史目录，浏览路过不算
         localHist = withHist(localHist, t.fromLocal);
         remoteHist = withHist(remoteHist, t.fromRemote);
-        invoke('note_transfer_dirs', { profileId, local: t.fromLocal, remote: t.fromRemote }).catch(() => {});
+        invoke('note_transfer_dirs', { profileId, local: t.fromLocal, remote: t.fromRemote, keep: cap() }).catch(() => {});
         refreshAfter(t);
       }
     }

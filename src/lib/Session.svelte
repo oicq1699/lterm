@@ -30,6 +30,8 @@
     prefPalette: string;
     /** 增亮档位 0..3，直接把配色表数值乘亮 */
     prefBright: number;
+    /** SFTP 路径框历史目录条数 */
+    prefSftpHist: number;
     prefCopyOnSelect: boolean;
     prefConfirmMultiLine: boolean;
     prefContextMenu: boolean;
@@ -45,7 +47,7 @@
   };
   let {
     sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefPalette,
-    prefBright,
+    prefBright, prefSftpHist,
     prefCopyOnSelect, prefConfirmMultiLine,
     prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
@@ -462,7 +464,7 @@
         <button onmousedown={noFocus} onclick={toggleSftpCols} title="显示/隐藏权限与所有者两列">{sftpWide ? '精简' : '详情'}</button>
         <button onmousedown={noFocus} onclick={() => showSftp = false} aria-label="关闭文件面板">✕</button>
       </div>
-      <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} wide={sftpWide} />
+      <SftpBrowser sid={sessionId} {profileId} password={sessionPassword} wide={sftpWide} histMax={prefSftpHist} />
     </div>
   {/if}
   {#if showFwd}
