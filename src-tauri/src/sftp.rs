@@ -125,6 +125,8 @@ pub struct SftpEntry {
     pub path: String,
     pub size: u64,
     pub is_dir: bool,
+    /// 自身是软链接（is_dir 反映的是链接指向的目标）
+    pub is_link: bool,
     pub modified: u64,
     pub mode: Option<u32>,
     pub uid: Option<u32>,
@@ -244,11 +246,26 @@ pub async fn remote_list(sftp: &SftpSession, path: &str) -> Result<Vec<SftpEntry
     let mut entries = sftp.read_dir(&canon).await.map_err(|e| format!("列目录失败: {e}"))?;
     while let Some(e) = entries.next() {
         let meta = e.metadata();
+        let name = e.file_name();
+        let child = join_posix(&canon, &name);
+        let mut is_dir = meta.is_dir();
+        let mut is_link = false;
+        let mut size = meta.size.unwrap_or(0);
+        // readdir 返回的是 lstat 结果：软链接一律标成非目录，既显示成文件也双击不进去。
+        // 指向目录的链接要再 stat 一次目标；断链就按普通文件处理。
+        if meta.is_symlink() {
+            is_link = true;
+            if let Ok(t) = sftp.metadata(&child).await {
+                is_dir = t.is_dir();
+                size = t.len();
+            }
+        }
         out.push(SftpEntry {
-            name: e.file_name(),
-            path: join_posix(&canon, &e.file_name()),
-            size: meta.size.unwrap_or(0),
-            is_dir: meta.is_dir(),
+            name,
+            path: child,
+            size,
+            is_dir,
+            is_link,
             modified: meta.mtime.unwrap_or(0) as u64,
             mode: meta.permissions.map(|p| p & 0o7777),
             uid: meta.uid,
@@ -656,6 +673,8 @@ pub struct LocalEntry {
     pub path: String,
     pub size: u64,
     pub is_dir: bool,
+    /// 自身是软链接（is_dir 反映的是链接指向的目标）
+    pub is_link: bool,
     pub modified: u64,
     pub mode: Option<u32>,
     pub user: Option<String>,
@@ -674,6 +693,8 @@ pub fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
             path: e.path().to_string_lossy().into_owned(),
             size: md.as_ref().map(|m| m.len()).unwrap_or(0),
             is_dir: md.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+            // DirEntry::file_type 不跟随链接，正好用来看"这一项本身是不是链接"
+            is_link: e.file_type().map(|t| t.is_symlink()).unwrap_or(false),
             modified: md.as_ref()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())

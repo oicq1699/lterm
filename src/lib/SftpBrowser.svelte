@@ -8,6 +8,8 @@
 
   type Entry = {
     name: string; path: string; size: number; is_dir: boolean; modified: number;
+    /** 自身是软链接；is_dir 已反映链接指向的目标 */
+    is_link?: boolean | null;
     mode?: number | null; uid?: number | null; gid?: number | null;
     user?: string | null; group?: string | null;
   };
@@ -41,13 +43,16 @@
   const fmtDate = (t: number) => t ? new Date(t * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 
   // ls 风格的 rwx 九位；setuid/sticky 等特定位在 title 的八进制里体现
-  const fmtRwx = (mode: number | null | undefined, isDir: boolean) => {
+  const fmtRwx = (mode: number | null | undefined, kind: string) => {
     if (mode == null) return '';
     const bits = 'rwxrwxrwx';
     let s = '';
     for (let i = 0; i < 9; i++) s += (mode >> (8 - i)) & 1 ? bits[i] : '-';
-    return (isDir ? 'd' : '-') + s;
+    return kind + s;
   };
+  const kindOf = (en: Entry) => en.is_link ? 'l' : en.is_dir ? 'd' : '-';
+  const iconOf = (en: Entry) => en.is_link ? '🔗' : en.is_dir ? '📁' : '📄';
+  const linkTip = (en: Entry) => '软链接' + (en.is_dir ? '（指向目录）' : '');
   const fmtOctal = (mode: number | null | undefined) => (mode == null ? '' : '0' + (mode & 0o7777).toString(8).padStart(3, '0'));
   const fmtOwner = (en: Entry) => en.user ?? (en.uid != null ? String(en.uid) : '');
   const fmtGroup = (en: Entry) => en.group ?? (en.gid != null ? String(en.gid) : '');
@@ -155,10 +160,22 @@
         localHist = withHist(localHist, t.fromLocal);
         remoteHist = withHist(remoteHist, t.fromRemote);
         invoke('note_transfer_dirs', { profileId, local: t.fromLocal, remote: t.fromRemote }).catch(() => {});
-        loadRemote();
+        refreshAfter(t);
       }
     }
   }).then((u) => unlisten.push(u));
+
+  // 传输成功后刷「目标那一端」：上传刷远端、下载刷本地，省得手工点 ⟳
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  function refreshAfter(t: Transfer) {
+    clearTimeout(refreshTimer);
+    // 批量传输合并成一次刷新
+    refreshTimer = setTimeout(() => {
+      // 只在用户仍停在发起传输的那个目录时刷，否则会把人从别处拽回去
+      if (t.dir === 'up' && remotePath === t.fromRemote) void loadRemote(undefined, true);
+      else if (t.dir === 'down' && localPath === t.fromLocal) void loadLocal(undefined, true);
+    }, 300);
+  }
 
   function pickHist(which: 'local' | 'remote', path: string) {
     openHist = '';
@@ -289,7 +306,10 @@
     }
   }).then((u) => unlisten.push(u));
 
-  onDestroy(() => { for (const u of unlisten) u(); });
+  onDestroy(() => {
+    clearTimeout(refreshTimer);
+    for (const u of unlisten) u();
+  });
 </script>
 
 <div class="browser">
@@ -325,9 +345,9 @@
               onclick={(e) => toggleSel('local', en.path, e)}
               onkeydown={(e) => e.key === 'Enter' && entryDbl('local', en)}
               ondblclick={() => entryDbl('local', en)}>
-            <span class="ico">{en.is_dir ? '📁' : '📄'}</span>
+            <span class="ico" title={en.is_link ? linkTip(en) : undefined}>{iconOf(en)}</span>
             {#if wide}
-              <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, en.is_dir)}</span>
+              <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, kindOf(en))}</span>
               <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
             {/if}
             <span class="fname" title={en.path}>{en.name}</span>
@@ -371,9 +391,9 @@
               onclick={(e) => toggleSel('remote', en.path, e)}
               onkeydown={(e) => e.key === 'Enter' && entryDbl('remote', en)}
               ondblclick={() => entryDbl('remote', en)}>
-            <span class="ico">{en.is_dir ? '📁' : '📄'}</span>
+            <span class="ico" title={en.is_link ? linkTip(en) : undefined}>{iconOf(en)}</span>
             {#if wide}
-              <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, en.is_dir)}</span>
+              <span class="fperm" title={fmtOctal(en.mode)}>{fmtRwx(en.mode, kindOf(en))}</span>
               <span class="fown" title={`${fmtOwner(en)}:${fmtGroup(en)}`}>{fmtOwner(en)}</span>
             {/if}
             <span class="fname" title={en.path}>{en.name}</span>
