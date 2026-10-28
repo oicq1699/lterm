@@ -699,14 +699,17 @@ pub fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
     let rd = std::fs::read_dir(&dir).map_err(|e| format!("读取本地目录失败: {e}"))?;
     let mut out = Vec::new();
     for e in rd.flatten() {
-        let md = e.metadata().ok();
+        // DirEntry::metadata 在 Unix 上是 lstat 语义：软链接会被算成普通文件，
+        // 于是指向目录的链接既排在文件里、双击还走上传。目录判定与权限都用跟随链接的
+        // Path::metadata，链接本身的存在性用 file_type（它不跟随）来标。
+        let is_link = e.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+        let md = e.path().metadata().ok();
         out.push(LocalEntry {
             name: e.file_name().to_string_lossy().into_owned(),
             path: e.path().to_string_lossy().into_owned(),
             size: md.as_ref().map(|m| m.len()).unwrap_or(0),
             is_dir: md.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-            // DirEntry::file_type 不跟随链接，正好用来看"这一项本身是不是链接"
-            is_link: e.file_type().map(|t| t.is_symlink()).unwrap_or(false),
+            is_link,
             modified: md.as_ref()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -807,7 +810,39 @@ pub fn sftp_cancel(registry: State<'_, Mutex<SftpRegistry>>, sid: String, transf
 
 #[cfg(test)]
 mod tests {
-    use super::local_mkdir;
+    use super::{local_list, local_mkdir};
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn local_list_treats_symlinked_dir_as_dir() {
+        let dir = std::env::temp_dir().join(format!("lterm-locallist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(dir.join("afile.txt"), b"hi").unwrap();
+        symlink(&target, dir.join("zdir")).unwrap(); // 指向目录的软链接
+        symlink(dir.join("afile.txt"), dir.join("zfile")).unwrap(); // 指向文件的软链接
+        symlink("/definitely-not-here-42", dir.join("zbroken")).unwrap(); // 断链
+
+        let listed = local_list(dir.to_string_lossy().into_owned()).unwrap();
+        let get = |n: &str| listed.iter().find(|e| e.name == n);
+
+        let zd = get("zdir").expect("列表应含 zdir");
+        assert!(zd.is_link && zd.is_dir, "指向目录的软链接应算目录（否则双击会走上传）");
+        assert!(listed.iter().position(|e| e.name == "zdir").unwrap()
+            < listed.iter().position(|e| e.name == "afile.txt").unwrap(),
+            "软链接目录应与目录排在文件之前");
+
+        let zf = get("zfile").expect("列表应含 zfile");
+        assert!(zf.is_link && !zf.is_dir, "指向文件的软链接仍按文件");
+        let zb = get("zbroken").expect("列表应含 zbroken");
+        assert!(zb.is_link && !zb.is_dir, "断链按普通文件处理，不应报错");
+
+        let td = get("target").expect("列表应含 target");
+        assert!(td.is_dir && !td.is_link, "真目录不该被标成链接");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn local_mkdir_creates_and_rejects_dupes() {
