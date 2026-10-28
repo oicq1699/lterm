@@ -81,6 +81,7 @@
   let prefCtrlEnter = $state('newline');
   let prefPalette = $state('tango');
   let prefBright = $state(0);
+  let dataDir = $state('');
   let prefConfirmClose = $state(true);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -537,8 +538,13 @@
     focusActive();
   }
 
+  async function loadSettingsPath() {
+    if (dataDir) return;
+    try { dataDir = await invoke<string>('get_data_dir'); } catch { /* 拿不到就不显示 */ }
+  }
   async function openSettings() {
     showSettings = !showSettings;
+    if (showSettings) void loadSettingsPath();
     if (showSettings && !fontList) {
       try { fontList = await invoke<string[]>('list_fonts'); } catch { fontList = []; }
     }
@@ -760,6 +766,8 @@
           </select>
         </div>
         <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
+
+        <div class="spath" title="设置、服务器列表、known_hosts 都存在这里">设置保存在：<code>{dataDir || '…'}</code></div>
       </div>
     </div>
   {/if}
@@ -1057,6 +1065,8 @@
   .setdlg .ck { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: #ccc; cursor: pointer; }
   .setdlg .hint { margin: 0; font-size: 11px; color: #777; line-height: 1.5; }
   .setdlg button { padding: 4px 10px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #ddd; cursor: pointer; }
+  .setdlg .spath { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2f2f2f; font-size: 11px; color: #888; }
+  .setdlg .spath code { color: #9fd0ff; word-break: break-all; user-select: text; }
   .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; flex-wrap: wrap; }
   .srow .lbl { width: auto; min-width: 30px; color: #aaa; flex-shrink: 0; }
   .srow .ctlsel { flex: 1; min-width: 0; max-width: 100%; padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }

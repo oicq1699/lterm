@@ -47,6 +47,12 @@ fn resolve_data_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
     PathBuf::from(base).join("lterm").join("data")
 }
 
+/// 设置与服务器列表实际存放在哪个目录，设置窗口要显示给用户看
+#[tauri::command]
+fn get_data_dir(app: tauri::AppHandle) -> String {
+    resolve_data_dir(Some(&app)).to_string_lossy().into_owned()
+}
+
 /// F12：打开 WebView 开发者工具（release 构建已启用 devtools feature）
 #[tauri::command]
 fn toggle_devtools(app: tauri::AppHandle) {
@@ -134,6 +140,7 @@ pub fn run() {
             dirstate::note_transfer_dirs,
             settings::get_settings,
             settings::set_settings,
+            get_data_dir,
             clipboard::clipboard_write,
             jump::get_proxy_chain,
             rdp::open_rdp,
