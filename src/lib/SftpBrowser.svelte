@@ -52,7 +52,7 @@
   };
   const kindOf = (en: Entry) => en.is_link ? 'l' : en.is_dir ? 'd' : '-';
   const iconOf = (en: Entry) => en.is_link ? '🔗' : en.is_dir ? '📁' : '📄';
-  const linkTip = (en: Entry) => '软链接' + (en.is_dir ? '（指向目录）' : '');
+  const linkTip = (en: Entry) => '软链接' + (en.is_dir ? '（指向目录）' : '（目标类型未能确认，双击会先按目录尝试）');
   const fmtOctal = (mode: number | null | undefined) => (mode == null ? '' : '0' + (mode & 0o7777).toString(8).padStart(3, '0'));
   const fmtOwner = (en: Entry) => en.user ?? (en.uid != null ? String(en.uid) : '');
   const fmtGroup = (en: Entry) => en.group ?? (en.gid != null ? String(en.gid) : '');
@@ -194,6 +194,14 @@
       which === 'local' ? loadLocal(en.path) : loadRemote(en.path);
     } else if (which === 'local') {
       uploadSelected();
+    } else if (en.is_link) {
+      // 列表里没能解析出链接目标类型时（老服务端 / 目录权限受限），先按目录进，
+      // 进不去再按文件下载，两头都不会卡住
+      void loadRemote(en.path, true).then((ok) => {
+        if (ok) return;
+        remoteSel = new Set([en.path]);
+        downloadSelected();
+      });
     } else {
       downloadSelected();
     }

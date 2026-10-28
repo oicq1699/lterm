@@ -300,3 +300,61 @@ async fn sftp_preserves_mode() {
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&back);
 }
+
+/// 指向目录的软链接：应识别为目录（能双击进入、与目录排在一起），断链按文件处理
+#[tokio::test]
+async fn real_sftp_symlinked_dir_counts_as_dir() {
+    if enabled().is_none() {
+        return;
+    }
+    let mut handle = connect_real().await;
+    let sftp = open_sftp(&mut handle).await;
+    let home = sftp.canonicalize(".").await.unwrap();
+    let dir = format!("{home}/lterm_sftp_link");
+    let _ = remote_remove(&sftp, &dir, true).await;
+    sftp.create_dir(&dir).await.unwrap();
+    let inner = format!("{dir}/inner");
+    sftp.create_dir(&inner).await.unwrap();
+
+    // 造软链接：SSH_FXP_SYMLINK 的两个参数顺序各家实现相反，先按 (链接, 目标) 试，
+    // 用 read_link 验证是否真的是我们要的链接，不对就换顺序
+    async fn make_link(sftp: &SftpSession, link: &str, target: &str) {
+        let _ = sftp.symlink(link.to_string(), target.to_string()).await;
+        if sftp.read_link(link.to_string()).await.ok().as_deref() == Some(target) {
+            return;
+        }
+        let _ = sftp.remove_file(link.to_string()).await;
+        sftp.symlink(target.to_string(), link.to_string()).await.unwrap();
+        assert_eq!(
+            sftp.read_link(link.to_string()).await.ok().as_deref(),
+            Some(target),
+            "两种参数顺序都造不出软链接"
+        );
+    }
+
+    let linkdir = format!("{dir}/linkdir");
+    make_link(&sftp, &linkdir, "inner").await;
+    let broken = format!("{dir}/broken");
+    make_link(&sftp, &broken, "nowhere-that-exists").await;
+
+    let tmp = std::env::temp_dir().join(format!("lterm-link-{}", std::process::id()));
+    std::fs::write(&tmp, b"hi").unwrap();
+    upload_core(&sftp, &tmp.to_string_lossy(), &format!("{dir}/afile.txt"), None, &mut |_, _| {})
+        .await
+        .unwrap();
+
+    let entries = remote_list(&sftp, &dir).await.unwrap();
+    let get = |n: &str| entries.iter().find(|e| e.name == n);
+    let ld = get("linkdir").expect("列表应含 linkdir");
+    assert!(ld.is_link, "应识别出这一项本身是软链接");
+    assert!(ld.is_dir, "指向目录的软链接应算目录，否则双击进不去");
+    let br = get("broken").expect("列表应含 broken");
+    assert!(br.is_link && !br.is_dir, "断链按普通文件处理即可");
+
+    let pos = |n: &str| entries.iter().position(|e| e.name == n).unwrap();
+    assert!(pos("linkdir") < pos("afile.txt"), "软链接目录应排在文件前（和目录一组）");
+    assert!(pos("inner") < pos("afile.txt") && pos("linkdir") < pos("afile.txt"));
+
+    let _ = remote_remove(&sftp, &dir, true).await;
+    let _ = std::fs::remove_file(&tmp);
+}

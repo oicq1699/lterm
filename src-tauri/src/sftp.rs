@@ -255,9 +255,21 @@ pub async fn remote_list(sftp: &SftpSession, path: &str) -> Result<Vec<SftpEntry
         // 指向目录的链接要再 stat 一次目标；断链就按普通文件处理。
         if meta.is_symlink() {
             is_link = true;
-            if let Ok(t) = sftp.metadata(&child).await {
-                is_dir = t.is_dir();
-                size = t.len();
+            match sftp.metadata(&child).await {
+                Ok(t) => {
+                    is_dir = t.is_dir();
+                    size = t.len();
+                }
+                // 有的服务端 stat(链接路径) 不跟随或受目录权限限制，再退一步用 realpath 解析后重试；
+                // 仍失败就按普通文件处理（前端双击时会再按目录试一次）
+                Err(_) => {
+                    if let Ok(real) = sftp.canonicalize(&child).await {
+                        if let Ok(t2) = sftp.metadata(&real).await {
+                            is_dir = t2.is_dir();
+                            size = t2.len();
+                        }
+                    }
+                }
             }
         }
         out.push(SftpEntry {
