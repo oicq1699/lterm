@@ -430,6 +430,10 @@
   }
 
   function onWindowKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && showSettings && !showForm && !pwPrompt) {
+      closeSettings();
+      return;
+    }
     if (e.key === 'Escape' && showForm && !pwPrompt) {
       closeForm();
       return;
@@ -527,6 +531,11 @@
     window.removeEventListener('keydown', onWindowKeydown);
     for (const u of unlistenAll) u();
   });
+
+  function closeSettings() {
+    showSettings = false;
+    focusActive();
+  }
 
   async function openSettings() {
     showSettings = !showSettings;
@@ -680,59 +689,6 @@
       {/if}
       <button class="gear" onmousedown={noFocus} onclick={() => toggleAside(!showAside)} title="显示/隐藏服务器列表 (Ctrl+B)">☰ 列表</button>
       <button class="gear" onmousedown={noFocus} onclick={openSettings} title="终端设置">⚙ 设置</button>
-      {#if showSettings}
-        <div class="settings">
-          <div class="srow">
-            <label><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
-            <label><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
-            <label><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
-            <label><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认</label>
-          </div>
-          <div class="srow">
-            <span class="lbl">Ctrl+Enter</span>
-            <select class="ctlsel" bind:value={prefCtrlEnter} onchange={saveSettingsSoon}>
-              <option value="newline">换行（发 Alt+Enter 的字节）</option>
-              <option value="csiu">换行（Kitty CSI-u 编码）</option>
-              <option value="same">不拦截（等同 Enter）</option>
-            </select>
-          </div>
-          <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
-          <div class="srow">
-            <span class="lbl">字号</span>
-            <button onclick={() => setFont(fontSize - 1)}>−</button>
-            <span class="num">{fontSize}</span>
-            <button onclick={() => setFont(fontSize + 1)}>＋</button>
-          </div>
-          <div class="srow">
-            <span class="lbl">字体</span>
-            <input class="fontin" list="fontlist" placeholder="默认（留空）" value={fontFamily}
-                   aria-label="终端字体"
-                   onchange={(e) => setFontFamily((e.target as HTMLInputElement).value)} />
-            <datalist id="fontlist">
-              {#each (fontList ?? []) as f (f)}<option value={f}></option>{/each}
-            </datalist>
-          </div>
-          <div class="hint">字体需系统已安装（如 MesloLGS NF），可直接输入名称；改动即时生效并保存</div>
-          <div class="srow">
-            <span class="lbl">配色</span>
-            <select class="ctlsel" bind:value={prefPalette} onchange={saveSettingsSoon}>
-              {#each Object.entries(PALETTE_LABELS) as [key, label] (key)}
-                <option value={key}>{label}</option>
-              {/each}
-            </select>
-          </div>
-          <div class="srow">
-            <span class="lbl">增亮</span>
-            <select class="ctlsel" bind:value={prefBright} onchange={saveSettingsSoon}>
-              <option value={0}>关</option>
-              <option value={1}>弱（γ1.15）</option>
-              <option value={2}>中（γ1.3）</option>
-              <option value={3}>强（γ1.5）</option>
-            </select>
-          </div>
-          <div class="hint">配色换的是那 16 个 ANSI 色（含背景），改完即时生效。程序自己写死的真彩输出不走这张表，只能靠增亮以外的手段，暂不支持。</div>
-        </div>
-      {/if}
     </div>
 
     <!-- 错误用浮层盖在终端上，不占布局，避免终端被挤变形/出滚动条 -->
@@ -743,6 +699,70 @@
       </div>
     {/if}
   </section>
+
+  {#if showSettings}
+    <div class="setmask" role="presentation" onclick={closeSettings}>
+      <div class="setdlg" role="dialog" aria-modal="true" aria-label="终端设置" tabindex={-1}
+           onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.key === 'Escape' && closeSettings()}>
+        <div class="shead">
+          <span>终端设置</span>
+          <button class="sclose" onmousedown={noFocus} onclick={closeSettings} aria-label="关闭设置">✕</button>
+        </div>
+
+        <div class="sec">外观</div>
+        <div class="srow">
+          <span class="lbl">字号</span>
+          <button onclick={() => setFont(fontSize - 1)}>−</button>
+          <span class="num">{fontSize}</span>
+          <button onclick={() => setFont(fontSize + 1)}>＋</button>
+        </div>
+        <div class="srow">
+          <span class="lbl">字体</span>
+          <input class="fontin" list="fontlist" placeholder="默认（留空）" value={fontFamily}
+                 aria-label="终端字体"
+                 onchange={(e) => setFontFamily((e.target as HTMLInputElement).value)} />
+          <datalist id="fontlist">
+            {#each (fontList ?? []) as f (f)}<option value={f}></option>{/each}
+          </datalist>
+        </div>
+        <div class="srow">
+          <span class="lbl">配色</span>
+          <select class="ctlsel" bind:value={prefPalette} onchange={saveSettingsSoon}>
+            {#each Object.entries(PALETTE_LABELS) as [key, label] (key)}
+              <option value={key}>{label}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="srow">
+          <span class="lbl">增亮</span>
+          <select class="ctlsel" bind:value={prefBright} onchange={saveSettingsSoon}>
+            <option value={0}>关</option>
+            <option value={1}>弱（γ1.15）</option>
+            <option value={2}>中（γ1.3）</option>
+            <option value={3}>强（γ1.5）</option>
+          </select>
+        </div>
+        <div class="hint">配色换的是那 16 个 ANSI 色（含背景）；程序自己写死的真彩不走这张表。字体需系统已安装（如 MesloLGS NF），可直接输入名称。改动即时生效并保存。</div>
+
+        <div class="sec">行为</div>
+        <label class="ck"><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认</label>
+
+        <div class="sec">键盘</div>
+        <div class="srow">
+          <span class="lbl">Ctrl+Enter</span>
+          <select class="ctlsel" bind:value={prefCtrlEnter} onchange={saveSettingsSoon}>
+            <option value="newline">换行（发 Alt+Enter 的字节）</option>
+            <option value="csiu">换行（Kitty CSI-u 编码）</option>
+            <option value="same">不拦截（等同 Enter）</option>
+          </select>
+        </div>
+        <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
+      </div>
+    </div>
+  {/if}
 
   {#if showForm}
     <div class="formmask">
@@ -1021,15 +1041,28 @@
   .gear { background: none; border: none; color: #999; cursor: pointer; font-size: 12px; }
   .icon { border: none; background: none; color: #666; cursor: pointer; padding: 0 6px; }
   .icon:hover { color: #8ab4f8; }
-  .settings { position: absolute; bottom: 28px; right: 8px; max-height: calc(100vh - 56px); overflow-y: auto; background: #252525; border: 1px solid #444; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; z-index: 10; width: 380px; color: #ccc; }
-  .settings label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .setmask { position: fixed; inset: 0; z-index: 56; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 24px 12px; }
+  .setdlg { width: 640px; max-width: 94vw; max-height: calc(100vh - 48px); overflow-y: auto; display: flex; flex-direction: column; gap: 9px;
+    padding: 14px 16px; background: #232323; border: 1px solid #444; border-radius: 10px; color: #ccc;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5); font-size: 13px; }
+  .setdlg .shead { display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 14px; color: #ddd;
+    padding-bottom: 8px; border-bottom: 1px solid #333; }
+  .setdlg .shead .sclose { border: none; background: none; color: #999; font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+  .setdlg .shead .sclose:hover { background: #444; color: #fff; }
+  .setdlg .sec { margin-top: 6px; font-size: 12px; color: #8ab4f8; border-bottom: 1px solid #2f2f2f; padding-bottom: 3px; }
+  .setdlg .srow { display: flex; gap: 8px; align-items: center; }
+  .setdlg .lbl { width: 82px; flex-shrink: 0; color: #aaa; }
+  .setdlg .ctlsel { flex: 1; min-width: 0; padding: 5px 6px; font-size: 13px; }
+  .setdlg .fontin { flex: 1; min-width: 0; padding: 5px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; font-size: 13px; }
+  .setdlg .ck { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: #ccc; cursor: pointer; }
+  .setdlg .hint { margin: 0; font-size: 11px; color: #777; line-height: 1.5; }
+  .setdlg button { padding: 4px 10px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #ddd; cursor: pointer; }
   .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; flex-wrap: wrap; }
   .srow .lbl { width: auto; min-width: 30px; color: #aaa; flex-shrink: 0; }
   .srow .ctlsel { flex: 1; min-width: 0; max-width: 100%; padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .srow .ctlsel option { background: #2a2a2a; color: #eee; }
   .srow .num { width: 26px; text-align: center; }
   .srow .fontin { flex: 1; min-width: 100px; padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
-  .settings .hint { font-size: 11px; color: #777; line-height: 1.5; }
   .pwmask { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
   .pwbox { background: #252525; border: 1px solid #444; border-radius: 8px; padding: 14px 16px; width: 340px; color: #ccc; display: flex; flex-direction: column; gap: 10px; }
   .pwbox p { margin: 0; font-size: 13px; word-break: break-all; }
