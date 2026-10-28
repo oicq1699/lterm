@@ -24,6 +24,8 @@ pub struct Settings {
     pub bright: u32,
     /// 关闭仍在线的会话标签前弹确认
     pub confirm_close: bool,
+    /// 服务器列表紧凑模式：一行只显示标题，操作走右键菜单
+    pub compact_list: bool,
 }
 
 impl Default for Settings {
@@ -40,6 +42,7 @@ impl Default for Settings {
             palette: "tango".into(),
             bright: 0,
             confirm_close: true,
+            compact_list: false,
         }
     }
 }

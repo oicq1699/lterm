@@ -67,7 +67,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -83,6 +83,7 @@
   let prefBright = $state(0);
   let dataDir = $state('');
   let prefConfirmClose = $state(true);
+  let prefCompactList = $state(false);
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -93,7 +94,7 @@
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
-        palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose,
+        palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -499,6 +500,7 @@
       prefPalette = s.palette || 'tango';
       prefBright = s.bright || 0;
       prefConfirmClose = s.confirmClose !== false;
+      prefCompactList = !!s.compactList;
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -562,6 +564,38 @@
   }
 
   const authLabel = { password: '密码', key: '密钥', agent: 'agent' } as const;
+
+  // 服务器条目的上下文菜单（两种列表风格都用它）
+  let srvCtx = $state<{ x: number; y: number; srv: Profile } | null>(null);
+  const CTX_W = 132, CTX_H = 152;
+  function openSrvCtx(e: MouseEvent, srv: Profile) {
+    e.preventDefault();
+    srvCtx = {
+      x: Math.max(4, Math.min(e.clientX, window.innerWidth - CTX_W)),
+      // 贴底时往上挪，别让菜单被裁掉
+      y: Math.max(4, Math.min(e.clientY, window.innerHeight - CTX_H)),
+      srv,
+    };
+  }
+  function srvAct(fn: (p: Profile) => void | Promise<void>) {
+    const p = srvCtx?.srv;
+    srvCtx = null;
+    if (p) void fn(p);
+  }
+  $effect(() => {
+    if (!srvCtx) return;
+    const away = (e: PointerEvent) => {
+      if (!(e.target as HTMLElement | null)?.closest?.('.srvctx')) srvCtx = null;
+    };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') srvCtx = null; };
+    // 捕获阶段：菜单开着时点别处或按 Esc 都要能关，xterm 会吞掉冒泡阶段的 Esc
+    window.addEventListener('pointerdown', away, true);
+    window.addEventListener('keydown', esc, true);
+    return () => {
+      window.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('keydown', esc, true);
+    };
+  });
 </script>
 
 <main>
@@ -595,12 +629,12 @@
         {/if}
         {#if searching || !collapsedFolders.includes(sec.tag)}
           {#each sec.items as hit (hit.server.id)}
-            <li class="member">
+            <li class="member" class:compact={prefCompactList} oncontextmenu={(e) => openSrvCtx(e, hit.server)}>
               <button class="server" class:busy={connectingIds.has(hit.server.id)}
                       onmousedown={noFocus}
                       ondblclick={() => connect(hit.server)}
                       onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(hit.server); } }}
-                      title={connectingIds.has(hit.server.id) ? '正在建立连接…' : '双击连接'}>
+                      title={connectingIds.has(hit.server.id) ? '正在建立连接…' : '双击连接 · 右键菜单'}>
                 <span class="titlerow">
                   {#if hit.server.icon && iconPaths(hit.server.icon)}
                     <span class="sicon"><Icon name={hit.server.icon} size={15} /></span>
@@ -608,14 +642,16 @@
                   <span class="name">{hit.server.name}</span>
                   {#if connectingIds.has(hit.server.id)}<span class="spin"></span><span class="ing">连接中</span>{/if}
                 </span>
-                <span class="meta">{hit.server.username}@{hit.server.host} · {hit.server.protocol === 'rdp' ? 'RDP' : authLabel[hit.server.auth_method]}</span>
-                {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
+                {#if !prefCompactList}
+                  <span class="meta">{hit.server.username}@{hit.server.host} · {hit.server.protocol === 'rdp' ? 'RDP' : authLabel[hit.server.auth_method]}</span>
+                  {#if hit.server.remark}<span class="remark">{hit.server.remark}</span>{/if}
+                {/if}
               </button>
-              <span class="acts">
+              {#if !prefCompactList}<span class="acts">
                 <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
                 <button class="icon" onclick={() => duplicate(hit.server)} title="复制到编辑窗口，保存后才新增"><Icon name="copy" size={13} /></button>
                 <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
-              </span>
+              </span>{/if}
             </li>
           {/each}
         {/if}
@@ -624,6 +660,16 @@
       {/each}
     </ul>
   </aside>
+
+  {#if srvCtx}
+    <div class="srvctx" role="menu" aria-label="服务器操作" style:left={srvCtx.x + 'px'} style:top={srvCtx.y + 'px'}>
+      <button role="menuitem" class="ctxi" onmousedown={noFocus} onclick={() => srvAct(connect)}>连接</button>
+      <div class="ctxsep" role="separator"></div>
+      <button role="menuitem" class="ctxi" onmousedown={noFocus} onclick={() => srvAct(edit)}>编辑</button>
+      <button role="menuitem" class="ctxi" onmousedown={noFocus} onclick={() => srvAct(duplicate)}>复制</button>
+      <button role="menuitem" class="ctxi danger" onmousedown={noFocus} onclick={() => srvAct((p) => remove(p.id))}>删除</button>
+    </div>
+  {/if}
 
   <section class="right">
     <div class="tabbar">
@@ -755,6 +801,7 @@
         <label class="ck"><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
         <label class="ck"><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
         <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefCompactList} onchange={saveSettingsSoon} /> 服务器列表紧凑模式（每行只显示标题，编辑/复制/删除走右键菜单）</label>
 
         <div class="sec">键盘</div>
         <div class="srow">
@@ -1007,6 +1054,11 @@
   /* 行内操作按钮单独一行放条目下方，横向不再挤占名称空间，以后加按钮直接往这里排 */
   .member { flex-direction: column; align-items: stretch; }
   .member .server { padding-left: 22px; border-bottom: none; }
+  /* 紧凑模式：一行一条，标题占满，行间留一条分隔线 */
+  .member.compact .server { flex-direction: row; align-items: center; padding: 4px 10px 4px 22px; }
+  .member.compact .titlerow { flex: 1; min-width: 0; }
+  .member.compact .name { flex: 1; min-width: 0; }
+  .member.compact { border-bottom: 1px solid #2a2a2a; }
   .member:hover .acts { background: #2d2d2d; }
   .acts { display: flex; justify-content: flex-start; gap: 2px; padding: 0 6px 3px 16px; border-bottom: 1px solid #2a2a2a; }
   .acts button { padding: 0 6px; line-height: 1.5; display: flex; align-items: center; justify-content: center; }
@@ -1067,6 +1119,13 @@
   .setdlg button { padding: 4px 10px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #ddd; cursor: pointer; }
   .setdlg .spath { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2f2f2f; font-size: 11px; color: #888; }
   .setdlg .spath code { color: #9fd0ff; word-break: break-all; user-select: text; }
+  .srvctx { position: fixed; z-index: 70; display: flex; flex-direction: column; padding: 3px; min-width: 132px;
+    background: #242424; border: 1px solid #4a4a4a; border-radius: 8px; box-shadow: 0 10px 28px rgba(0,0,0,.6); }
+  .srvctx .ctxi { text-align: left; padding: 5px 12px; font-size: 13px; border: none; background: none; color: #ddd; cursor: pointer; border-radius: 5px; }
+  .srvctx .ctxi:hover { background: #2f5063; color: #fff; }
+  .srvctx .ctxi.danger { color: #e58383; }
+  .srvctx .ctxi.danger:hover { background: #4a1d1d; color: #f0a0a0; }
+  .srvctx .ctxsep { height: 1px; margin: 3px 6px; background: #3a3a3a; }
   .srow { display: flex; gap: 8px; align-items: center; white-space: nowrap; flex-wrap: wrap; }
   .srow .lbl { width: auto; min-width: 30px; color: #aaa; flex-shrink: 0; }
   .srow .ctlsel { flex: 1; min-width: 0; max-width: 100%; padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
