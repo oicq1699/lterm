@@ -125,6 +125,13 @@ pub struct Registry {
     entries: HashMap<String, mpsc::UnboundedSender<SessionCmd>>,
 }
 
+impl Registry {
+    /// 还活着的会话数：会话结束时会把自己摘掉，所以这里就是"断开前还剩多少连接"
+    pub fn live_count(&self) -> usize {
+        self.entries.len()
+    }
+}
+
 #[derive(Clone, Serialize)]
 struct OutputPayload {
     id: String,

@@ -471,6 +471,13 @@
   }
 
   onMount(async () => {
+    // 放最前面：启动早期就点 X 也该被问住，而不是等下面几个 await 跑完才挂上
+    unlistenAll.push(await listen<{ sessions: number }>('confirm-exit', (ev) => {
+      const names = tabs.filter((t) => t.alive).map((t) => t.profile.name);
+      const who = names.length ? `（${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}）` : '';
+      const ok = confirm(`还有 ${ev.payload.sessions} 个连接在用${who}，退出会全部断开，传输中的任务也会一起中断。确定退出？`);
+      invoke('resolve_exit', { allow: ok }).catch(() => {});
+    }));
     window.addEventListener('resize', onWinResize);
     window.addEventListener('lterm-zoom', onZoom);
     window.addEventListener('keydown', onWindowKeydown);
@@ -813,7 +820,7 @@
         <label class="ck"><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
         <label class="ck"><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
         <label class="ck"><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
-        <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认（只影响标签页；窗口上还有连接时，退出总归会问一次）</label>
         <label class="ck"><input type="checkbox" bind:checked={prefCompactList} onchange={saveSettingsSoon} /> 服务器列表紧凑模式（每行只显示标题，编辑/复制/删除走右键菜单）</label>
         <div class="srow">
           <span class="lbl">SFTP 历史</span>
