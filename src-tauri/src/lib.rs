@@ -5,6 +5,7 @@ pub mod fonts;
 pub mod fuzzy;
 pub mod hostkeys;
 pub mod jump;
+pub mod keyfile;
 pub mod rdp;
 pub mod session;
 pub mod settings;

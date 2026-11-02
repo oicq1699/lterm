@@ -919,7 +919,7 @@
               <label class="lab" for="f-key">私钥路径</label>
               <div class="ctrl"><input id="f-key" placeholder="~/.ssh/id_ed25519" bind:value={draft.key_path} /></div>
             </div>
-            <p class="hint">路径可以 ~ 开头。私钥本身带口令的，连接时会单独问一次口令，口令只在这次会话里用，不写进配置文件。</p>
+            <p class="hint">路径可以 ~ 开头。支持 OpenSSH、PEM（PKCS#1/PKCS#8）和 PuTTY 的 .ppk；私钥带口令的，连接时会单独问一次口令，口令只在这次会话里用，不写进配置文件。</p>
           {/if}
         {/if}
         {#if draft.protocol === 'rdp'}

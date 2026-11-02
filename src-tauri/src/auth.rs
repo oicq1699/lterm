@@ -1,11 +1,12 @@
 use russh::client::{self, Handle};
 use russh::keys::{
     agent::client::{AgentClient, AgentStream},
-    load_secret_key, Algorithm, Error as KeyError, PrivateKeyWithHashAlg,
+    Algorithm, PrivateKeyWithHashAlg,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::keyfile;
 use crate::store::{AuthMethod, ServerProfile};
 
 fn home_dir() -> Option<PathBuf> {
@@ -46,26 +47,14 @@ fn key_label(raw: &str) -> String {
     }
 }
 
-fn key_error(raw: &str, e: &KeyError, has_passphrase: bool) -> String {
-    match e {
-        KeyError::KeyIsEncrypted => format!("私钥已加密，需要填口令：{}", key_label(raw)),
-        KeyError::IO(_) => format!("读取私钥失败（{}），请确认文件存在且当前用户可读：{e}", key_label(raw)),
-        // 其余多数是解不开：口令错、格式不认识、文件被截断。带口令时按最常见的原因提示
-        _ if has_passphrase => format!("私钥解不开，口令可能不正确：{}（{e}）", key_label(raw)),
-        _ => format!("加载私钥失败：{}（{e}）", key_label(raw)),
-    }
-}
-
 /// 私钥是否需要口令。连接前往前先问一次，明文密钥就不多问。
-/// 判据就是"不带口令能不能解开"，所以新式 openssh 与老式 PEM（Proc-Type: 4,ENCRYPTED）都覆盖。
+/// 判据是"文件里自己有没有写着带口令"（PuTTY 的 `Encryption:`、老式 PEM 的 `DEK-Info:`），
+/// 再加一次"不带口令解解看"（新式 openssh 的加密标志藏在 base64 里面）。
 pub fn key_needs_passphrase(raw: Option<&str>) -> bool {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return false;
     };
-    matches!(
-        load_secret_key(expand_key_path(raw), None),
-        Err(KeyError::KeyIsEncrypted)
-    )
+    keyfile::needs_passphrase(&expand_key_path(raw))
 }
 
 pub async fn authenticate<H: client::Handler + Send + Sync + 'static>(
@@ -93,8 +82,8 @@ pub async fn authenticate<H: client::Handler + Send + Sync + 'static>(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or("未配置私钥路径")?;
-            let key = load_secret_key(expand_key_path(raw), password.as_deref())
-                .map_err(|e| key_error(raw, &e, password.is_some()))?;
+            let key = keyfile::load(&expand_key_path(raw), password.as_deref())
+                .map_err(|e| e.message(&key_label(raw)))?;
             authenticate_key(handle, &profile.username, key).await
         }
         AuthMethod::Agent => authenticate_agent(handle, &profile.username).await,
