@@ -51,7 +51,8 @@ fn putty_ppk_plain_and_encrypted() {
     assert!(!keyfile::needs_passphrase(&plain));
     assert!(keyfile::load(&plain, None).is_ok());
 
-    for name in ["id_ed25519_enc.ppk", "id_rsa_3072_enc.ppk"] {
+    // v2（老 PuTTYgen 默认）和 v3（Argon2）的密钥派生不一样，两种都得走一遍
+    for name in ["id_ed25519_enc.ppk", "id_rsa_3072_enc.ppk", "id_rsa_3072_v2_enc.ppk2"] {
         let p = fixture(name);
         assert!(keyfile::needs_passphrase(&p), "{name} 该问口令");
         assert!(
