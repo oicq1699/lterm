@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { hopPromptLabel, type ChainHop } from '$lib/chainPrompt';
 
   type Props = { sid: string; profileId: string; password: string | null; wide?: boolean; histMax?: number };
   let { sid, profileId, password, wide = false, histMax = 8 }: Props = $props();
@@ -81,14 +82,14 @@
 
   async function ensureOpen() {
     if (ready) return;
-    type Hop = { id: string; name: string; host: string; port: number; username: string; auth_method: 'password' | 'key' | 'agent' };
-    const chain = await invoke<Hop[]>('get_proxy_chain', { profileId });
+    const chain = await invoke<ChainHop[]>('get_proxy_chain', { profileId });
     const pwMap: Record<string, string> = {};
     if (password) pwMap[profileId] = password;
     for (const h of chain) {
-      if (h.auth_method !== 'password') continue;
       if (h.id === profileId && password) continue;
-      const pw = prompt(`密码 (${h.name} · ${h.username}@${h.host}:${h.port})`);
+      const label = hopPromptLabel(h);
+      if (!label) continue;
+      const pw = prompt(label);
       if (pw === null) throw new Error('已取消');
       pwMap[h.id] = pw;
     }

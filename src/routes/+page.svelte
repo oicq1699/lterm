@@ -6,6 +6,7 @@
   import Icon from '$lib/Icon.svelte';
   import { ICON_NAMES, normalizeIcon, iconPaths } from '$lib/icons';
   import { PALETTE_LABELS } from '$lib/termPalette';
+  import { hopPromptLabel, type ChainHop } from '$lib/chainPrompt';
 
   type RdpOptions = {
     sec: 'auto' | 'nla' | 'weak' | 'tls' | 'legacy';
@@ -22,7 +23,6 @@
   };
   type Hit = { server: Profile; score: number };
   type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null };
-  type Hop = { id: string; name: string; host: string; port: number; username: string; auth_method: 'password' | 'key' | 'agent' };
 
   let servers: Profile[] = $state([]);
   let folders: string[] = $state([]);
@@ -337,14 +337,15 @@
 
   async function connectInner(p: Profile) {
     if (p.protocol === 'rdp') { await connectRdp(p); return; }
-    let chain: Hop[];
+    let chain: ChainHop[];
     try {
-      chain = await invoke<Hop[]>('get_proxy_chain', { profileId: p.id });
+      chain = await invoke<ChainHop[]>('get_proxy_chain', { profileId: p.id });
     } catch (e) { error = String(e); return; }
     const pwMap: Record<string, string> = {};
     for (const h of chain) {
-      if (h.auth_method !== 'password') continue;
-      const pw = await askPassword(`密码 (${h.name} · ${h.username}@${h.host}:${h.port})`);
+      const label = hopPromptLabel(h);
+      if (!label) continue;
+      const pw = await askPassword(label);
       if (pw === null) return; // 取消
       pwMap[h.id] = pw;
     }
@@ -369,12 +370,14 @@
     // Linux 上把密码经管道交给 xfreerdp 的 /from-stdin，不进 argv，也不写盘。
     let pwMap: Record<string, string> = {};
     if (p.proxy_jump) {
-      let chain: Hop[];
-      try { chain = await invoke<Hop[]>('get_proxy_chain', { profileId: p.id }); }
+      let chain: ChainHop[];
+      try { chain = await invoke<ChainHop[]>('get_proxy_chain', { profileId: p.id }); }
       catch (e) { error = String(e); return; }
       for (const h of chain) {
-        if (h.id === p.id || h.auth_method !== 'password') continue;
-        const pw = await askPassword(`跳板密码 (${h.name} · ${h.username}@${h.host}:${h.port})`);
+        if (h.id === p.id) continue;
+        const label = hopPromptLabel(h, '跳板密码');
+        if (!label) continue;
+        const pw = await askPassword(label);
         if (pw === null) return;
         pwMap[h.id] = pw;
       }
@@ -909,6 +912,7 @@
               <label class="lab" for="f-key">私钥路径</label>
               <div class="ctrl"><input id="f-key" placeholder="~/.ssh/id_ed25519" bind:value={draft.key_path} /></div>
             </div>
+            <p class="hint">路径可以 ~ 开头。私钥本身带口令的，连接时会单独问一次口令，口令只在这次会话里用，不写进配置文件。</p>
           {/if}
         {/if}
         {#if draft.protocol === 'rdp'}

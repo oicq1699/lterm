@@ -1,6 +1,8 @@
 //! 真实 OpenSSH 端到端测试：需容器/目标环境有可用 sshd（含 sftp subsystem）。
 //! 启用方式：LTERM_REAL_SSHD=1 LTERM_REAL_SSHD_KEY=/path/id_ed25519 LTERM_REAL_SSHD_USER=tester cargo test --test real_sshd
 //! 本仓库配置：scripts/setup_test_sshd.sh 会把测试公钥写入 tester 用户 authorized_keys（端口 22 或 LTERM_REAL_SSHD_PORT）。
+//! 私钥带口令时另加 LTERM_REAL_SSHD_KEY_PW=<口令>（把已授权的那把加个口令再指过来，就能覆盖加密私钥路径；
+//! 路径支持 ~ 写法，用来验证展开逻辑）。
 
 use lterm_lib::auth;
 use lterm_lib::sftp::{download_core, download_tree, remote_list, remote_remove, upload_core, upload_tree};
@@ -37,6 +39,8 @@ fn enabled() -> Option<(String, u16, String, String)> {
 
 async fn connect_real() -> client::Handle<AcceptAll> {
     let (host, port, user, key) = enabled().expect("enabled");
+    // 私钥带口令时用 LTERM_REAL_SSHD_KEY_PW 提供；把已授权的密钥加个口令再指过来即可覆盖这条路径
+    let pw = std::env::var("LTERM_REAL_SSHD_KEY_PW").ok().filter(|s| !s.is_empty());
     let mut profile = ServerProfile {
         id: "real".into(),
         name: "real".into(),
@@ -63,7 +67,7 @@ async fn connect_real() -> client::Handle<AcceptAll> {
     .await
     .expect("真实 sshd 连接失败");
     profile.username = user;
-    auth::authenticate(&mut handle, &profile, None)
+    auth::authenticate(&mut handle, &profile, pw)
         .await
         .expect("真实 sshd 密钥认证失败");
     let _ = profile;

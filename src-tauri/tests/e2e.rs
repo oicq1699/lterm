@@ -41,15 +41,59 @@ fn key_b() -> PrivateKey {
     PrivateKey::from_openssh(KEY_B).expect("内嵌测试密钥 B")
 }
 
+/// 密钥 A 的加密副本（口令 lterm-test-pw）：公钥与 KEY_A 相同，故测试服务器照样认。
+const KEY_A_ENC: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABC5a6uSKc
+H7/JiU6ySm8YoJAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIM4hFW/8018a8vTe
+XIJd2V16OR5qeK3zE4abigjfqB9uAAAAkIct7kTs9gcK7o8doiiBaPjQL5qNYL+mQ8R/I0
+G+LQgYuAMDtGVaCLn9U2vmI5IFghNee3uyR9slqk7Nk+qV0iuGlSpVcOu0H2MMzZNM+8sR
+KeYiUwvi7sYzPquWhG678iv74Zf8i0MNHvH1yFJ8MoT8W5Fyii5jNtYbSDBSGVUSAOtqQv
+2idUEXOqrQ5adtRw==
+-----END OPENSSH PRIVATE KEY-----";
+
+/// 老式 PEM 加密（Proc-Type: 4,ENCRYPTED / AES-128-CBC），同样是 throwaway 测试向量
+const KEY_RSA_PEM_ENC: &str = "-----BEGIN RSA PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: AES-128-CBC,37EEB634740F6B1A88DE2B7C1AE23910
+
+08xmrlZO9DOFt3UpBs6khCiJkVI99qtqVHjiDmFr1WrCZaZ554FK8U2eY7ncHuvV
+qpp+eDq2lp5XK1IB1EdX5saXYGsduHv9/SSF+WSQ527juTpHcCo4+ZLjDCXEdCUS
+8UVsMPyiR9PERwZCF1BmKdW6D9JxjYAA1LybvJx3cbqmSEYnNqSvm3SC4ScYvM0i
+QvbjOUqqZc8IyEIjeni5IrFuisFWxWYEfvbC6r38J2u9eiZr/SC/7nhPShBkqf3n
+utyPGeBM2VflkRyBrs0olid3XQwSmEm0YEVmxULYZSZNRhakelGTpj360LO7/4uy
+h8iCfJd89difo7CceRWqJxlQzcYZCKsbiBAbXVzTYKdMScZN4cgwd68QylgxIob5
+yB4KdkM+ijFiriffVm54lZVJBA7jEFZZGZw4c5JL7irLIagj+Pa3qwQQtBHpLDfL
+jzGOhuEbyHXM2CQnUW5DGoVYoQmPib2llAHX12H1uNcmXD/WhJ8fMvuVjtr+jEaE
+6aPj7O3iCLhpRCxa9QDIJpn6IM41JFsjWobqwo7PMDtnfuaNkCfvmbzyqkt8vkU6
+N5SRE4oSSzU/MbcowOEsgqhyFz6mqJurBM8QCrphIjvC1xT7lBpvvkd0+j+C8oKu
+z9ybRM69nG6PrKj4OxVGEN5MACah97dZo0rzx+Mc7zvljzG4UNEV2U7fEIkh8uKQ
+wDDBH7cudS/p7ClrqNDtG0UbnIF7nC4dQqpcgfKb8LBJiZZchl9XQOKYT1N7+NtY
+GYvbTPrAOUINIc9Wf1m1porLkAxfHEmVVVaGBptZeLlNHLv+k3+/WzZFkWCjmDy4
+2m5JG/CoBGmppmAd8PNvrq+0yKEazpZGtmfatYaXstt4d73DCW3umM6QpVEaTp3B
+E+AdpUtWKHDfuUah7Siup/40qoyV4qw87Ogh0GUtdhU10mWLs9EoM/5xy8+o8sf5
+2vlWxvWI2tGSxym2HsOtaMB17ygNRoElGFLOeOBwUHI4ZaK3qAjYpVj6hiMM/179
+oIHO5ttD/q2EblccSozpZLq30hsQ1F1lp5hhwze+GtViZgz5FflGSA88uSClp3H3
+HKXyZLf+g+gSR7ReWz9eChviwL71xjUOOlxotooPOkyQAmO/IjoTzU0dLy/tYRec
+X4Jud+2bWsObvIHbm7lo/+StRDrvTOzI+ui1Uvzc6CqfE/Kw+jXer8Uk7qRpDsoo
+91koGHLCbRd8UolSbj/t7IjzIGYq/dJOvUv5lSDIlTnMJXpR1MujN45gqrOkW/Ix
+VO+bLMii1kFwkl9qe2TIONSYJnK2yoqsyrUgJzgAnAejmSCFYicW/R01+by+8ZGG
+vj3SFA5KK26PUSo7IxMnFF6IMpBykIXLpa3Pkhpd8IRoATeFdwCEtFdgMLUPWu8/
+57ipHILRZ+5xKCA3mO4SAvwe/jcqoD/gEUh54uM60KQlByhpR+eVMZtMBQhv07sB
+0pgWTrYrGOmheaazy9VhiIY2rn7mSaApYL7XTg8Fr/p2TCYNnrx4Ee8jRn0g8xk2
+W7CXBufQFnMCfwZO7WCmttC6lnpPeGOGaArnqlUQimBsWZ1cJW8R12uN10C2xRm6
+-----END RSA PRIVATE KEY-----";
+
+const ENC_PW: &str = "lterm-test-pw";
+
+fn key_file(tag: &str, content: &str) -> PathBuf {
+    let p = std::env::temp_dir().join(format!("lterm-e2e-key-{}-{}.key", std::process::id(), tag));
+    std::fs::write(&p, content).expect("写临时密钥文件");
+    p
+}
+
 /// 把内嵌密钥落成临时文件（模拟用户 key_path 场景）
 fn key_a_file(tag: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!(
-        "lterm-e2e-keya-{}-{}.key",
-        std::process::id(),
-        tag
-    ));
-    std::fs::write(&p, KEY_A).expect("写临时密钥文件");
-    p
+    key_file(tag, KEY_A)
 }
 
 // ---------- 测试服务器：密码 pass123；公钥限定 id_ed25519；echo shell ----------
@@ -514,4 +558,82 @@ fn embedded_keys_parse() {
     let k = load_secret_key(&f, None).expect("文件方式加载内嵌密钥");
     assert_eq!(k.public_key().key_data(), key_a().public_key().key_data());
     std::fs::remove_file(&f).ok();
+}
+
+/// 私钥路径里手输的 `~` 不会被系统展开，认证前得自己展开
+#[test]
+fn key_path_expands_tilde() {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    if let Some(h) = &home {
+        assert_eq!(auth::expand_key_path("~/.ssh/id_ed25519"), h.join(".ssh/id_ed25519"));
+        assert_eq!(auth::expand_key_path("~"), h.clone());
+        assert_eq!(auth::expand_key_path("  ~/.ssh/k  "), h.join(".ssh/k"), "首尾空格应忽略");
+        if cfg!(windows) {
+            assert_eq!(auth::expand_key_path("~\\ssh\\id"), h.join("ssh").join("id"), "Windows 反斜杠写法");
+        }
+    }
+    assert_eq!(auth::expand_key_path("/etc/ssh/id"), PathBuf::from("/etc/ssh/id"));
+    // ~other/… 要查 passwd，不猜：原样传下去，报错里还能看到用户写的路径
+    assert_eq!(auth::expand_key_path("~bob/.ssh/id"), PathBuf::from("~bob/.ssh/id"));
+}
+
+/// Handle 不实现 Debug，取错误只能 match
+async fn key_auth_err(port: u16, pw: Option<String>, key_path: String) -> String {
+    match connect_and_auth(port, AuthMethod::Key, pw, Some(key_path)).await {
+        Ok(h) => {
+            close(h).await;
+            panic!("本应认证失败");
+        }
+        Err(e) => e,
+    }
+}
+
+/// 加密私钥：只有真带口令的才要求输入口令；不给/给错要能看懂该做什么；给对应能登录
+#[tokio::test]
+async fn encrypted_key_passphrase_flow() {
+    let (port, _a, task) = start_test_server().await;
+    let enc = key_file("enc-a", KEY_A_ENC);
+    let plain = key_file("plain-a", KEY_A);
+    let pem = key_file("enc-pem", KEY_RSA_PEM_ENC);
+    let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+    assert!(auth::key_needs_passphrase(Some(&s(&enc))), "新式 openssh 加密私钥应要求口令");
+    assert!(auth::key_needs_passphrase(Some(&s(&pem))), "老式 PEM（Proc-Type: 4,ENCRYPTED）也应要求口令");
+    assert!(!auth::key_needs_passphrase(Some(&s(&plain))), "明文私钥不该多问一次口令");
+    assert!(!auth::key_needs_passphrase(Some("   ")));
+    assert!(!auth::key_needs_passphrase(None));
+
+    let err = key_auth_err(port, None, s(&enc)).await;
+    assert!(err.contains("口令"), "提示应指向缺少口令，实际为: {err}");
+
+    let err = key_auth_err(port, Some("明显不对".into()), s(&enc)).await;
+    assert!(err.contains("口令可能不正确"), "提示应指向口令不对，实际为: {err}");
+
+    let err = key_auth_err(port, None, "/no/such/key".into()).await;
+    assert!(err.contains("/no/such/key"), "报错要带上用户填的路径: {err}");
+
+    // KEY_A_ENC 就是 KEY_A 加了口令的副本，公钥不变，测试服务器照样认
+    let handle = connect_and_auth(port, AuthMethod::Key, Some(ENC_PW.into()), Some(s(&enc)))
+        .await
+        .expect("带正确口令的加密私钥应认证成功");
+    close(handle).await;
+
+    for f in [&enc, &plain, &pem] {
+        let _ = std::fs::remove_file(f);
+    }
+    task.abort();
+}
+
+/// 公钥没被服务器接受时，报错要点明是哪把钥匙，否则用户无从对照 authorized_keys
+#[tokio::test]
+async fn key_auth_rejection_names_the_key() {
+    let (port, _a, task) = start_test_server().await;
+    let other = key_file("other", KEY_B);
+    let err = key_auth_err(port, None, other.to_string_lossy().into_owned()).await;
+    assert!(err.contains("authorized_keys"), "应提示去检查 authorized_keys: {err}");
+    assert!(err.contains("SHA256:"), "应带出指纹供比对: {err}");
+    let _ = std::fs::remove_file(other);
+    task.abort();
 }

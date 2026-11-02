@@ -1,11 +1,72 @@
 use russh::client::{self, Handle};
 use russh::keys::{
     agent::client::{AgentClient, AgentStream},
-    load_secret_key, Algorithm, PrivateKeyWithHashAlg,
+    load_secret_key, Algorithm, Error as KeyError, PrivateKeyWithHashAlg,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::store::{AuthMethod, ServerProfile};
+
+fn home_dir() -> Option<PathBuf> {
+    // std::env::home_dir 已废弃：Windows 上只看 USERPROFILE，Unix 上看 HOME
+    #[cfg(windows)]
+    let key = "USERPROFILE";
+    #[cfg(not(windows))]
+    let key = "HOME";
+    std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// `~/.ssh/id_ed25519` 是手输私钥路径最常见的写法，但系统调用不会展开 `~`，这里补上。
+/// `~other/...` 需要查 passwd，不展开：原样传下去，报错里还能看到用户写的内容。
+pub fn expand_key_path(raw: &str) -> PathBuf {
+    let raw = raw.trim();
+    let Some(rest) = raw.strip_prefix('~') else {
+        return PathBuf::from(raw);
+    };
+    if !rest.is_empty() && !rest.starts_with('/') && !rest.starts_with('\\') {
+        return PathBuf::from(raw);
+    }
+    let rel = rest.trim_start_matches(['/', '\\']);
+    match home_dir() {
+        Some(home) if !rel.is_empty() => home.join(rel),
+        Some(home) => home,
+        None => PathBuf::from(raw),
+    }
+}
+
+/// 报错里既给原样（用户看得懂自己填了什么），也在被改写时给出实际读取的路径
+fn key_label(raw: &str) -> String {
+    let shown = expand_key_path(raw).display().to_string();
+    let trimmed = raw.trim();
+    if shown == trimmed {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed} → {shown}")
+    }
+}
+
+fn key_error(raw: &str, e: &KeyError, has_passphrase: bool) -> String {
+    match e {
+        KeyError::KeyIsEncrypted => format!("私钥已加密，需要填口令：{}", key_label(raw)),
+        KeyError::IO(_) => format!("读取私钥失败（{}），请确认文件存在且当前用户可读：{e}", key_label(raw)),
+        // 其余多数是解不开：口令错、格式不认识、文件被截断。带口令时按最常见的原因提示
+        _ if has_passphrase => format!("私钥解不开，口令可能不正确：{}（{e}）", key_label(raw)),
+        _ => format!("加载私钥失败：{}（{e}）", key_label(raw)),
+    }
+}
+
+/// 私钥是否需要口令。连接前往前先问一次，明文密钥就不多问。
+/// 判据就是"不带口令能不能解开"，所以新式 openssh 与老式 PEM（Proc-Type: 4,ENCRYPTED）都覆盖。
+pub fn key_needs_passphrase(raw: Option<&str>) -> bool {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    matches!(
+        load_secret_key(expand_key_path(raw), None),
+        Err(KeyError::KeyIsEncrypted)
+    )
+}
 
 pub async fn authenticate<H: client::Handler + Send + Sync + 'static>(
     handle: &mut Handle<H>,
@@ -26,9 +87,14 @@ pub async fn authenticate<H: client::Handler + Send + Sync + 'static>(
             }
         }
         AuthMethod::Key => {
-            let path = profile.key_path.as_deref().ok_or("未配置私钥路径")?;
-            let key = load_secret_key(path, password.as_deref())
-                .map_err(|e| format!("加载私钥失败: {e}"))?;
+            let raw = profile
+                .key_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or("未配置私钥路径")?;
+            let key = load_secret_key(expand_key_path(raw), password.as_deref())
+                .map_err(|e| key_error(raw, &e, password.is_some()))?;
             authenticate_key(handle, &profile.username, key).await
         }
         AuthMethod::Agent => authenticate_agent(handle, &profile.username).await,
@@ -40,11 +106,19 @@ pub async fn authenticate_key<H: client::Handler + Send + Sync + 'static>(
     username: &str,
     key: russh::keys::PrivateKey,
 ) -> Result<(), String> {
+    // 被拒绝时要说清是哪把钥匙：最常见的下一步是"公钥没装到目标账号"或"装到了别的账号"
+    let pk = key.public_key().clone();
+    let hint = format!(
+        "{}，指纹 {}",
+        key.comment(),
+        crate::hostkeys::fingerprint(&pk).unwrap_or_default()
+    );
+    let key = Arc::new(key);
     let res = handle
         .authenticate_publickey(
             username,
             PrivateKeyWithHashAlg::new(
-                Arc::new(key),
+                key,
                 handle
                     .best_supported_rsa_hash()
                     .await
@@ -57,7 +131,9 @@ pub async fn authenticate_key<H: client::Handler + Send + Sync + 'static>(
     if res.success() {
         Ok(())
     } else {
-        Err("密钥认证被服务器拒绝".into())
+        Err(format!(
+            "密钥认证被服务器拒绝（私钥 {hint}）：请确认这把公钥已加入目标账号的 authorized_keys"
+        ))
     }
 }
 

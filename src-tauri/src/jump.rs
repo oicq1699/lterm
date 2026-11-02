@@ -114,6 +114,9 @@ pub struct ProfileBrief {
     pub port: u16,
     pub username: String,
     pub auth_method: AuthMethod,
+    pub key_path: Option<String>,
+    /// 私钥是否需要口令：前端据此决定问不问，明文密钥不打扰用户
+    pub key_passphrase_required: bool,
 }
 
 /// 前端据此逐跳收集密码
@@ -137,6 +140,8 @@ pub fn get_proxy_chain(
             port: p.port,
             username: p.username.clone(),
             auth_method: p.auth_method,
+            key_path: p.key_path.clone(),
+            key_passphrase_required: crate::auth::key_needs_passphrase(p.key_path.as_deref()),
         })
         .collect())
 }
