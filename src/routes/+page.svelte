@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import Session from '$lib/Session.svelte';
   import Icon from '$lib/Icon.svelte';
   import { ICON_NAMES, normalizeIcon, iconPaths } from '$lib/icons';
@@ -472,11 +473,17 @@
 
   onMount(async () => {
     // 放最前面：启动早期就点 X 也该被问住，而不是等下面几个 await 跑完才挂上
-    unlistenAll.push(await listen<{ sessions: number }>('confirm-exit', (ev) => {
+    unlistenAll.push(await getCurrentWindow().onCloseRequested(async (ev) => {
+      // 只要有 JS 监听这个事件，Tauri 就不会自己关窗口，所以先拦下，退不退交给 resolve_exit 说
+      ev.preventDefault();
       const names = tabs.filter((t) => t.alive).map((t) => t.profile.name);
-      const who = names.length ? `（${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}）` : '';
-      const ok = confirm(`还有 ${ev.payload.sessions} 个连接在用${who}，退出会全部断开，传输中的任务也会一起中断。确定退出？`);
-      invoke('resolve_exit', { allow: ok }).catch(() => {});
+      if (!names.length) {
+        await invoke('resolve_exit', { allow: true });
+        return;
+      }
+      const who = `（${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}）`;
+      const ok = confirm(`还有 ${names.length} 个连接在用${who}，退出会全部断开，传输中的任务也会一起中断。确定退出？`);
+      await invoke('resolve_exit', { allow: ok });
     }));
     window.addEventListener('resize', onWinResize);
     window.addEventListener('lterm-zoom', onZoom);

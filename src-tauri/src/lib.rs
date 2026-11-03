@@ -16,7 +16,7 @@ pub mod tunnel;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use store::ServerStore;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 /// 便携模式：优先使用可执行文件同级的 data/ 目录（已存在或可创建时）。
 pub fn portable_data_dir() -> Option<PathBuf> {
@@ -62,46 +62,34 @@ fn toggle_devtools(app: tauri::AppHandle) {
     }
 }
 
-/// 关窗口时是否已经问过用户（记住问的时间，避免确认框叠着弹，也避免前端没接住事件把窗口锁死）
-#[derive(Default)]
-struct ExitAsk {
-    asked_at: Mutex<Option<std::time::Instant>>,
+
+/// 关闭请求留个痕：这类问题只能出现在用户的机器上，没有日志就分不清事件是没到 Rust、
+/// 还是到了但界面没接住。写失败不影响功能，忽略错误即可。
+fn log_close_request(app: &tauri::AppHandle) {
+    use std::io::Write;
+    let live = app
+        .state::<Mutex<session::Registry>>()
+        .lock()
+        .map(|g| g.live_count())
+        .unwrap_or_default();
+    let line = format!(
+        "[{}] CloseRequested，在用会话 {live}\n",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    let path = resolve_data_dir(Some(app)).join("exit.log");
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
-#[derive(Clone, serde::Serialize)]
-struct ExitPayload {
-    sessions: usize,
-}
-
-/// 窗口收到关闭请求时怎么处理
-#[derive(Debug, PartialEq, Eq)]
-enum CloseDecision {
-    /// 没有连接在用，直接关
-    Allow,
-    /// 已经问过且还在等答复，这次不叠第二个框
-    WaitAnswer,
-    /// 有连接在用，拦下来问用户
-    Ask(usize),
-}
-
-/// 刚问过不到 5 秒就再点 X：算用户还在看框；超过 5 秒还没答复，多半是界面没接住事件，
-/// 重新问一次，绝不能把窗口锁死在关不掉的状态
-fn decide_close(live: usize, since_ask: Option<std::time::Duration>) -> CloseDecision {
-    if live == 0 {
-        return CloseDecision::Allow;
-    }
-    if let Some(d) = since_ask {
-        if d < std::time::Duration::from_secs(5) {
-            return CloseDecision::WaitAnswer;
-        }
-    }
-    CloseDecision::Ask(live)
-}
-
-/// 前端对 confirm-exit 的答复：只有 allow 才真的退出
+/// 前端问完"确定退出？"之后的唯一出口：窗口的关闭请求总会被前端拦下，退不退由这里说
 #[tauri::command]
-fn resolve_exit(app: tauri::AppHandle, state: tauri::State<'_, ExitAsk>, allow: bool) {
-    *state.asked_at.lock().unwrap() = None;
+fn resolve_exit(app: tauri::AppHandle, allow: bool) {
     if allow {
         app.exit(0);
     }
@@ -149,25 +137,11 @@ pub fn run() {
             app.manage(Mutex::new(dirstate::DirState::load(&dir)?));
             let settings = settings::AppSettings::load(&dir)?;
             app.manage(Mutex::new(settings));
-            app.manage(ExitAsk::default());
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 标题栏 X：还有活连接时必须先问一句，不能让程序悄悄把连接全掐了
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let app = window.app_handle();
-                let guard = app.state::<ExitAsk>();
-                let live = app.state::<Mutex<session::Registry>>().lock().unwrap().live_count();
-                let since_ask = guard.asked_at.lock().unwrap().map(|at| at.elapsed());
-                match decide_close(live, since_ask) {
-                    CloseDecision::Allow => {}
-                    CloseDecision::WaitAnswer => api.prevent_close(),
-                    CloseDecision::Ask(sessions) => {
-                        api.prevent_close();
-                        *guard.asked_at.lock().unwrap() = Some(std::time::Instant::now());
-                        let _ = app.emit("confirm-exit", ExitPayload { sessions });
-                    }
-                }
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                log_close_request(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -214,22 +188,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running lterm");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn close_window_needs_confirm_only_with_live_sessions() {
-        assert_eq!(decide_close(0, None), CloseDecision::Allow);
-        assert_eq!(decide_close(1, None), CloseDecision::Ask(1));
-        // 刚问完就再点：不叠第二个框
-        assert_eq!(decide_close(2, Some(Duration::from_secs(1))), CloseDecision::WaitAnswer);
-        // 5 秒还没答复：当作前端没接住事件，重新问，别把窗口锁死
-        assert_eq!(decide_close(2, Some(Duration::from_secs(6))), CloseDecision::Ask(2));
-        // 没有连接了就不该拦（问过一次也要放行）
-        assert_eq!(decide_close(0, Some(Duration::from_secs(1))), CloseDecision::Allow);
-    }
 }
