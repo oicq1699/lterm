@@ -12,6 +12,7 @@ pub mod settings;
 pub mod sftp;
 pub mod store;
 pub mod tunnel;
+pub mod update;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -181,6 +182,8 @@ pub fn run() {
             settings::set_settings,
             get_data_dir,
             resolve_exit,
+            update::update_feed,
+            update::update_check,
             clipboard::clipboard_write,
             jump::get_proxy_chain,
             rdp::open_rdp,

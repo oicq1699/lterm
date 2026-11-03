@@ -28,6 +28,10 @@ pub struct Settings {
     pub compact_list: bool,
     /// SFTP 路径框历史目录的下拉条数
     pub sftp_hist: u32,
+    /// 启动时静默检查一次新版本（GitHub Releases）
+    pub check_update: bool,
+    /// 被「忽略此版本」跳过的版本号，空串 = 没跳过任何版本
+    pub skip_update: String,
 }
 
 impl Default for Settings {
@@ -46,6 +50,8 @@ impl Default for Settings {
             confirm_close: true,
             compact_list: false,
             sftp_hist: 8,
+            check_update: true,
+            skip_update: String::new(),
         }
     }
 }
@@ -104,6 +110,8 @@ mod tests {
         assert_eq!(st.inner.palette, "tango", "老配置缺 palette 应取默认值");
         assert_eq!(st.inner.bright, 0);
         assert!(st.inner.confirm_close, "老配置缺 confirmClose 应默认弹确认");
+        assert!(st.inner.check_update, "老配置缺 checkUpdate 应默认开检查");
+        assert_eq!(st.inner.skip_update, "", "老配置没有跳过版本的概念");
 
         let mut s = st.inner.clone();
         s.ctrl_enter = "same".into();

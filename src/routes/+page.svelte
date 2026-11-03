@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { openUrl } from '@tauri-apps/plugin-opener';
   import Session from '$lib/Session.svelte';
   import Icon from '$lib/Icon.svelte';
   import { ICON_NAMES, normalizeIcon, iconPaths } from '$lib/icons';
@@ -68,7 +69,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; checkUpdate: boolean; skipUpdate: string };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -86,6 +87,8 @@
   let prefConfirmClose = $state(true);
   let prefCompactList = $state(false);
   let prefSftpHist = $state(8);
+  let prefCheckUpdate = $state(true);
+  let skipUpdate = $state('');
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
@@ -97,13 +100,74 @@
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
-        sftpHist: prefSftpHist,
+        sftpHist: prefSftpHist, checkUpdate: prefCheckUpdate, skipUpdate,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
   function saveSettingsSoon() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveSettings, 300);
+  }
+
+  // ---- 新版本检测：请求由界面发（走系统 TLS，省一套 HTTPS 依赖），解析与版本比较在后端 ----
+  type Release = { version: string; url: string; notes: string };
+  let currentVersion = $state('');
+  let update = $state<Release | null>(null);
+  let updateDismissed = $state(false);
+  let updateChecking = $state(false);
+  let updateMsg = $state('');
+
+  async function checkForUpdate(manual = false) {
+    if (updateChecking) return;
+    updateChecking = true;
+    if (manual) updateMsg = '检查中…';
+    try {
+      const feed = await invoke<{ api: string; current: string }>('update_feed');
+      currentVersion = feed.current;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      let res: Response;
+      try {
+        res = await fetch(feed.api, { headers: { Accept: 'application/vnd.github+json' }, signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!res.ok) {
+        // 匿名访问限流是这里最常见的失败，其余状态码原样报出来
+        throw new Error(res.status === 403 || res.status === 429 ? 'GitHub 接口限流，稍后再试' : `GitHub 返回 HTTP ${res.status}`);
+      }
+      const rel = await invoke<Release | null>('update_check', { body: await res.text() });
+      if (rel && rel.version !== skipUpdate) {
+        update = rel;
+        updateDismissed = false;
+        if (manual) updateMsg = `发现新版本 v${rel.version}（当前 v${feed.current}）`;
+      } else if (manual) {
+        updateMsg = rel ? `v${rel.version} 被你忽略过，点「恢复提醒」会再问` : `已是最新版本 v${feed.current}`;
+      }
+    } catch (e) {
+      // 启动时的静默检查失败不打扰，手动检查要把原因显示出来
+      if (manual) updateMsg = `检查失败：${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      updateChecking = false;
+    }
+  }
+
+  function openReleasePage() {
+    if (!update?.url) return;
+    void openUrl(update.url).catch(() => { updateMsg = '打开发布页失败，请到 GitHub 的 Releases 页面手动下载'; });
+  }
+
+  function skipThisVersion() {
+    if (!update) return;
+    skipUpdate = update.version;
+    update = null;
+    saveSettingsSoon();
+  }
+
+  function unskipVersion() {
+    skipUpdate = '';
+    saveSettingsSoon();
+    void checkForUpdate(true);
   }
 
   // 焦点在哪：输入进不了终端多半是焦点落在了列表/SFTP 上，给个显性提示
@@ -521,8 +585,13 @@
       prefConfirmClose = s.confirmClose !== false;
       prefCompactList = !!s.compactList;
       prefSftpHist = Math.min(30, Math.max(3, s.sftpHist || 8));
+      prefCheckUpdate = s.checkUpdate !== false;
+      skipUpdate = s.skipUpdate ?? '';
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
+    void invoke<{ current: string }>('update_feed').then((f) => { currentVersion = f.current; }).catch(() => {});
+    // 晚一点再问：别和恢复窗口、首屏渲染抢那点带宽，也别在用户还在挑服务器时就弹框
+    if (prefCheckUpdate) setTimeout(() => void checkForUpdate(), 1500);
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
       noticeQueue.push(`\x1b[33m[安全] 新主机 ${ev.payload.host}:${ev.payload.port}，指纹已记录: ${ev.payload.fingerprint}\x1b[0m`);
     }));
@@ -777,6 +846,15 @@
         <button class="dismiss" onclick={() => error = ''}>✕</button>
       </div>
     {/if}
+    {#if update && !updateDismissed}
+      <div class="updatetoast" role="status">
+        <span class="uttitle">发现新版本 v{update.version}</span>
+        <span class="utsub">当前 v{currentVersion || '…'}，去发布页看更新说明并下载</span>
+        <button class="utact" onclick={openReleasePage}>查看更新</button>
+        <button class="utact" onclick={skipThisVersion} title="这个版本不再提醒，出了更新的版本会再问">忽略此版本</button>
+        <button class="dismiss" onclick={() => updateDismissed = true} title="这次先不，下次启动再提醒">✕</button>
+      </div>
+    {/if}
   </section>
 
   {#if showSettings}
@@ -846,6 +924,18 @@
           </select>
         </div>
         <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
+
+        <div class="sec">更新</div>
+        <div class="srow">
+          <span class="lbl">当前版本</span>
+          <span class="num">v{currentVersion || '…'}</span>
+          <button disabled={updateChecking} onclick={() => checkForUpdate(true)}>{updateChecking ? '检查中…' : '立即检查'}</button>
+          {#if skipUpdate}
+            <button onclick={unskipVersion}>恢复提醒（已忽略 v{skipUpdate}）</button>
+          {/if}
+        </div>
+        {#if updateMsg}<div class="supd">{updateMsg}</div>{/if}
+        <label class="ck"><input type="checkbox" bind:checked={prefCheckUpdate} onchange={saveSettingsSoon} /> 启动时自动检查新版本（只访问 GitHub Releases 接口，不发任何本机信息）</label>
 
         <div class="spath" title="设置、服务器列表、known_hosts 都存在这里">设置保存在：<code>{dataDir || '…'}</code></div>
       </div>
@@ -1124,6 +1214,14 @@
     padding: 7px 10px; background: #4a1d1d; color: #f0a0a0; font-size: 12px; border: 1px solid #6b2b2b; border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0,0,0,.55); }
   .errtoast span { word-break: break-all; }
+  .updatetoast { position: absolute; left: 10px; bottom: 36px; z-index: 30; max-width: 76%; display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; background: #16324c; color: #cfe4ff; font-size: 12px; border: 1px solid #2b5480; border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.55); }
+  .updatetoast .uttitle { font-weight: 600; white-space: nowrap; }
+  .updatetoast .utsub { color: #9fc4e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .updatetoast .utact { padding: 2px 8px; white-space: nowrap; }
+  .updatetoast .dismiss { color: #cfe4ff; }
+  .setdlg .supd { font-size: 12px; color: #9fc4e8; margin: 2px 0 4px; }
   .dismiss { background: none; border: none; color: #f0a0a0; cursor: pointer; flex-shrink: 0; }
   .status { padding: 4px 10px; font-size: 12px; color: #999; border-top: 1px solid #333; display: flex; gap: 10px; align-items: center; position: relative; }
   .status button { padding: 2px 10px; }
