@@ -28,6 +28,8 @@
 
   let servers: Profile[] = $state([]);
   let folders: string[] = $state([]);
+  // 列表被手动排过序：显示按 servers 数组顺序走，新增落到同组末尾
+  let manualOrdered = $state(false);
   let hits: Hit[] = $state([]);
   let query = $state('');
   let showForm = $state(false);
@@ -231,6 +233,7 @@
   async function refresh() {
     servers = (await invoke<Profile[]>('list_servers')).map(norm);
     folders = await invoke<string[]>('list_folders');
+    manualOrdered = await invoke<boolean>('get_manual_order');
     search();
   }
 
@@ -245,7 +248,11 @@
   }
 
   type Section = { tag: string; label: string; items: Hit[] };
-  const byName = (a: Hit, b: Hit) => a.server.name.localeCompare(b.server.name, 'zh');
+  const nameCmp = (a: Profile, b: Profile) => a.name.localeCompare(b.name, 'zh');
+  const sameOrder = () => 0;
+  // 列表被手动排过序时按数组顺序显示；搜索时仍按名称，避免命中项顺序看不懂
+  const keepManualOrder = $derived(manualOrdered && query.trim() === '');
+  const groupCmp = $derived<(a: Profile, b: Profile) => number>(keepManualOrder ? sameOrder : nameCmp);
   const groupNames = $derived(
     [...new Set([...folders, ...servers.map((s) => s.group_tag).filter((t): t is string => !!t)])]
       .sort((a, b) => a.localeCompare(b, 'zh'))
@@ -253,23 +260,28 @@
   const shareDirHistory = $derived(
     [...new Set(servers.map((s) => s.rdp.shareDir).filter((d): d is string => !!d))]
   );
-  const sections = $derived.by<Section[]>(() => {
-    const m = new Map<string, Hit[]>();
-    for (const h of hits) {
-      const t = h.server.group_tag ?? '';
-      let arr = m.get(t);
-      if (!arr) { arr = []; m.set(t, arr); }
-      arr.push(h);
+  // 分组之间固定按名称，未分组永远最后；组内顺序由 cmp 决定
+  function groupBy<T>(list: T[], tagOf: (v: T) => string | null, cmp: (a: T, b: T) => number, emptyTags: string[] = []) {
+    const m = new Map<string, T[]>();
+    for (const t of emptyTags) m.set(t, []);
+    for (const v of list) {
+      const t = tagOf(v) ?? '';
+      const arr = m.get(t);
+      if (arr) arr.push(v); else m.set(t, [v]);
     }
-    // 已声明的文件夹即使为空也显示；搜索时只保留有命中项的
-    const tags = new Set<string>([...folders, ...m.keys()]);
-    const named = [...tags].filter((t) => t !== '' && (!query.trim() || m.has(t)))
-      .sort((a, b) => a.localeCompare(b, 'zh'));
-    const secs = named.map((t) => ({ tag: t, label: t, items: (m.get(t) ?? []).sort(byName) }));
+    const secs = [...m.keys()].filter((t) => t !== '')
+      .sort((a, b) => a.localeCompare(b, 'zh'))
+      .map((t) => ({ tag: t, items: m.get(t)!.sort(cmp) }));
     const rest = m.get('');
-    if (rest?.length) secs.push({ tag: '', label: '未分组', items: rest.sort(byName) });
+    if (rest?.length) secs.push({ tag: '', items: rest.sort(cmp) });
     return secs;
-  });
+  }
+  const sections = $derived.by<Section[]>(() =>
+    groupBy(hits, (h) => h.server.group_tag, (a, b) => groupCmp(a.server, b.server), query.trim() ? [] : folders)
+      .map((g) => ({ tag: g.tag, label: g.tag || '未分组', items: g.items }))
+  );
+  // 调整顺序以全量列表为基准（搜索时不提供排序入口，不受命中过滤影响）
+  const orderedGroups = $derived(groupBy(servers, (s) => s.group_tag, groupCmp));
   const searching = $derived(query.trim() !== '');
   function toggleFolder(tag: string) {
     collapsedFolders = collapsedFolders.includes(tag)
@@ -303,6 +315,36 @@
       collapsedFolders = collapsedFolders.filter((t) => t !== tag);
       await refresh();
     } catch (e) { error = String(e); }
+  }
+
+  async function applyOrder(orderedIds: string[], manual: boolean) {
+    try {
+      await invoke('set_server_order', { orderedIds, manual });
+      manualOrdered = manual;
+      // 本地就地重排，不等后端回读：连点两次上移不该被上一帧的旧快照吞掉
+      const pos = new Map(orderedIds.map((id, i) => [id, i]));
+      servers = [...servers].sort((a, b) => (pos.get(a.id) ?? 1e9) - (pos.get(b.id) ?? 1e9));
+      search();
+    } catch (e) { error = String(e); }
+  }
+
+  // 组内上下移动，不跨组；第一次移动即把列表标记成手动排序
+  function moveServer(id: string, delta: -1 | 1) {
+    const groups = orderedGroups.map((g) => ({ tag: g.tag, items: [...g.items] }));
+    const g = groups.find((x) => x.items.some((s) => s.id === id));
+    if (!g) return;
+    const from = g.items.findIndex((s) => s.id === id);
+    const to = from + delta;
+    if (to < 0 || to >= g.items.length) return;
+    const [moved] = g.items.splice(from, 1);
+    g.items.splice(to, 0, moved);
+    void applyOrder(groups.flatMap((x) => x.items.map((s) => s.id)), true);
+  }
+
+  function resetOrder() {
+    if (!servers.length) return;
+    if (!confirm('按名称重新排列服务器列表？手动调过的顺序会丢失。')) return;
+    void applyOrder([...servers].sort(nameCmp).map((s) => s.id), false);
   }
 
   async function save() {
@@ -662,7 +704,7 @@
 
   // 服务器条目的上下文菜单（两种列表风格都用它）
   let srvCtx = $state<{ x: number; y: number; srv: Profile } | null>(null);
-  const CTX_W = 132, CTX_H = 152;
+  const CTX_W = 132, CTX_H = 196;
   function openSrvCtx(e: MouseEvent, srv: Profile) {
     e.preventDefault();
     srvCtx = {
@@ -702,6 +744,9 @@
       <input class="search" placeholder="模糊搜索：名称 备注 用户 主机…" bind:value={query} oninput={search} />
       <button onmousedown={noFocus} onclick={() => { if (showForm) { showForm = false; focusActive(); } else { draft = emptyDraft(); showForm = true; } }} title="添加服务器">＋</button>
       <button onmousedown={noFocus} onclick={newFolder} title="新建文件夹">⊞</button>
+      {#if manualOrdered}
+        <button onmousedown={noFocus} onclick={resetOrder} title="列表被手动排过序，点此按名称重排">↺</button>
+      {/if}
       <button onmousedown={noFocus} onclick={() => toggleAside(false)} title="隐藏列表 (Ctrl+B)">⟨</button>
     </div>
     <ul class="server-list">
@@ -723,7 +768,7 @@
           </li>
         {/if}
         {#if searching || !collapsedFolders.includes(sec.tag)}
-          {#each sec.items as hit (hit.server.id)}
+          {#each sec.items as hit, i (hit.server.id)}
             <li class="member" class:compact={prefCompactList} oncontextmenu={(e) => openSrvCtx(e, hit.server)}>
               <button class="server" class:busy={connectingIds.has(hit.server.id)}
                       onmousedown={noFocus}
@@ -743,6 +788,10 @@
                 {/if}
               </button>
               {#if !prefCompactList}<span class="acts">
+                {#if !searching}
+                  <button class="icon" disabled={i === 0} onclick={() => moveServer(hit.server.id, -1)} title="上移（组内）">↑</button>
+                  <button class="icon" disabled={i === sec.items.length - 1} onclick={() => moveServer(hit.server.id, 1)} title="下移（组内）">↓</button>
+                {/if}
                 <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
                 <button class="icon" onclick={() => duplicate(hit.server)} title="复制到编辑窗口，保存后才新增"><Icon name="copy" size={13} /></button>
                 <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
@@ -762,6 +811,10 @@
       <div class="ctxsep" role="separator"></div>
       <button role="menuitem" class="ctxi" onmousedown={noFocus} onclick={() => srvAct(edit)}>编辑</button>
       <button role="menuitem" class="ctxi" onmousedown={noFocus} onclick={() => srvAct(duplicate)}>复制</button>
+      <div class="ctxsep" role="separator"></div>
+      <button role="menuitem" class="ctxi" onmousedown={noFocus} onclick={() => srvAct((p) => moveServer(p.id, -1))}>上移</button>
+      <button role="menuitem" class="ctxi" onmousedown={noFocus} onclick={() => srvAct((p) => moveServer(p.id, 1))}>下移</button>
+      <div class="ctxsep" role="separator"></div>
       <button role="menuitem" class="ctxi danger" onmousedown={noFocus} onclick={() => srvAct((p) => remove(p.id))}>删除</button>
     </div>
   {/if}
@@ -1186,6 +1239,8 @@
   .member:hover .acts { background: #2d2d2d; }
   .acts { display: flex; justify-content: flex-start; gap: 2px; padding: 0 6px 3px 16px; border-bottom: 1px solid #2a2a2a; }
   .acts button { padding: 0 6px; line-height: 1.5; display: flex; align-items: center; justify-content: center; }
+  .acts button:disabled { opacity: .3; cursor: default; }
+  .acts button:disabled:hover { color: inherit; }
   .member .server { padding-left: 22px; }
   .server { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }

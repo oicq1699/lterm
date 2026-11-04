@@ -149,6 +149,8 @@ pub fn run() {
             store::list_servers,
             store::upsert_server,
             store::delete_server,
+            store::get_manual_order,
+            store::set_server_order,
             store::list_folders,
             store::add_folder,
             store::rename_folder,

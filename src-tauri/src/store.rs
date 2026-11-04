@@ -124,30 +124,36 @@ struct ServersFile {
     /// 文件夹名（独立于服务器存在，允许空文件夹）
     #[serde(default)]
     folders: Vec<String>,
+    /// 用户手动排过序：列表按 servers 数组顺序显示，新服务器插到同组末尾；
+    /// false 则按名称排，数组顺序只影响“同组末尾”这类插入落点
+    #[serde(default)]
+    manual_order: bool,
 }
 
 pub struct ServerStore {
     path: PathBuf,
     pub servers: Vec<ServerProfile>,
     pub folders: Vec<String>,
+    pub manual_order: bool,
 }
 
 impl ServerStore {
     pub fn load(dir: &Path) -> Result<Self, String> {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join("servers.json");
-        let (servers, folders) = if path.exists() {
+        let (servers, folders, manual_order) = if path.exists() {
             let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let parsed: ServersFile = serde_json::from_str(&raw)
                 .map_err(|e| format!("servers.json 解析失败: {e}"))?;
-            (parsed.servers, parsed.folders)
+            (parsed.servers, parsed.folders, parsed.manual_order)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), false)
         };
         Ok(Self {
             path,
             servers,
             folders,
+            manual_order,
         })
     }
 
@@ -157,6 +163,7 @@ impl ServerStore {
             version: 1,
             servers: self.servers.clone(),
             folders: self.folders.clone(),
+            manual_order: self.manual_order,
         };
         let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
         let tmp = self.path.with_extension("json.tmp");
@@ -179,12 +186,42 @@ impl ServerStore {
             }
         }
         let saved = profile.clone();
-        match self.servers.iter_mut().find(|s| s.id == profile.id) {
-            Some(existing) => *existing = profile,
-            None => self.servers.push(profile),
+        match self.servers.iter().position(|s| s.id == profile.id) {
+            Some(i) => self.servers[i] = profile,
+            None => {
+                // 手动排过序时按名称插会打乱用户顺序，落到同组末尾
+                if self.manual_order {
+                    let g = profile.group_tag.as_deref();
+                    match self.servers.iter().rposition(|s| s.group_tag.as_deref() == g) {
+                        Some(i) => self.servers.insert(i + 1, profile),
+                        None => self.servers.push(profile),
+                    }
+                } else {
+                    self.servers.push(profile);
+                }
+            }
         }
         self.save()?;
         Ok(saved)
+    }
+
+    /// 按给定 id 顺序重排列表，并记录是否手动排序。
+    /// ids 里没覆盖到的服务器保持原有相对顺序排在末尾，免得并发新增把数据弄丢。
+    pub fn set_order(&mut self, ordered_ids: &[String], manual: bool) -> Result<(), String> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut out: Vec<ServerProfile> = Vec::with_capacity(self.servers.len());
+        for id in ordered_ids {
+            if !seen.insert(id.as_str()) {
+                continue;
+            }
+            if let Some(s) = self.servers.iter().find(|s| s.id == *id) {
+                out.push(s.clone());
+            }
+        }
+        out.extend(self.servers.iter().filter(|s| !seen.contains(s.id.as_str())).cloned());
+        self.servers = out;
+        self.manual_order = manual;
+        self.save()
     }
 
     pub fn remove(&mut self, id: &str) -> Result<bool, String> {
@@ -264,6 +301,21 @@ pub fn delete_server(
     id: String,
 ) -> Result<bool, String> {
     state.lock().unwrap().remove(&id)
+}
+
+/// 列表是否被手动排过序（决定前端按数组顺序还是按名称显示）
+#[tauri::command]
+pub fn get_manual_order(state: tauri::State<'_, std::sync::Mutex<ServerStore>>) -> bool {
+    state.lock().unwrap().manual_order
+}
+
+#[tauri::command]
+pub fn set_server_order(
+    state: tauri::State<'_, std::sync::Mutex<ServerStore>>,
+    ordered_ids: Vec<String>,
+    manual: bool,
+) -> Result<(), String> {
+    state.lock().unwrap().set_order(&ordered_ids, manual)
 }
 
 #[tauri::command]
@@ -365,6 +417,57 @@ mod tests {
         st.upsert(profile("c", "gamma", Some("临时组"))).unwrap();
         assert!(st.folders.contains(&"临时组".to_string()), "用到新分组时应自动登记文件夹");
         std::fs::remove_dir_all(&st.path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn manual_order_flag_controls_insertion_and_survives_reload() {
+        let dir = std::env::temp_dir().join(format!("lterm-store-test-order-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let mut st = ServerStore::load(&dir).unwrap();
+        st.upsert(profile("a", "aa", Some("生产"))).unwrap();
+        st.upsert(profile("b", "bb", Some("生产"))).unwrap();
+        st.upsert(profile("c", "cc", Some("开发"))).unwrap();
+        // 没手动排过序：新增一律追加，显示顺序由前端按名称排
+        st.upsert(profile("d", "dd", Some("生产"))).unwrap();
+        assert_eq!(ids(&st), ["a", "b", "c", "d"]);
+        assert!(!st.manual_order);
+
+        // 手动排成 c,a,b,d 后，新增落到同组（生产）末尾
+        st.set_order(&["c".into(), "a".into(), "b".into(), "d".into()], true).unwrap();
+        st.upsert(profile("e", "ee", Some("生产"))).unwrap();
+        assert_eq!(ids(&st), ["c", "a", "b", "d", "e"], "新服务器应排在同组最后一台之后");
+        // 全新分组没有成员，只能排在列表末尾
+        st.upsert(profile("f", "ff", Some("测试"))).unwrap();
+        assert_eq!(ids(&st), ["c", "a", "b", "d", "e", "f"]);
+
+        let re = ServerStore::load(&dir).unwrap();
+        assert!(re.manual_order, "手动排序标志应落盘");
+        assert_eq!(ids(&re), ["c", "a", "b", "d", "e", "f"]);
+
+        // 只给出部分 id 也不能丢服务器；顺带把标志位复位成按名称
+        st.set_order(&["a".into()], false).unwrap();
+        assert_eq!(st.servers.len(), 6);
+        assert_eq!(ids(&st), ["a", "c", "b", "d", "e", "f"]);
+        assert!(!ServerStore::load(&dir).unwrap().manual_order);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_json_without_manual_order_flag_loads_as_alphabetical() {
+        let dir = std::env::temp_dir().join(format!("lterm-store-test-ordflag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("servers.json"),
+            r#"{"version":1,"servers":[],"folders":["生产"]}"#,
+        )
+        .unwrap();
+        let st = ServerStore::load(&dir).unwrap();
+        assert!(!st.manual_order, "老 servers.json 缺 manual_order 应按未手动排序加载");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn ids(st: &ServerStore) -> Vec<String> {
+        st.servers.iter().map(|s| s.id.clone()).collect()
     }
 
     #[test]
