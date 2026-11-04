@@ -328,23 +328,79 @@
     } catch (e) { error = String(e); }
   }
 
-  // 组内上下移动，不跨组；第一次移动即把列表标记成手动排序
-  function moveServer(id: string, delta: -1 | 1) {
+  // 组内把第 from 条挪到第 to 条（to 按挪走之前的下标算）
+  function reorderWithin(tag: string, from: number, rawTo: number) {
     const groups = orderedGroups.map((g) => ({ tag: g.tag, items: [...g.items] }));
-    const g = groups.find((x) => x.items.some((s) => s.id === id));
+    const g = groups.find((x) => x.tag === tag);
     if (!g) return;
-    const from = g.items.findIndex((s) => s.id === id);
-    const to = from + delta;
-    if (to < 0 || to >= g.items.length) return;
+    const to = Math.max(0, Math.min(rawTo > from ? rawTo - 1 : rawTo, g.items.length - 1));
+    if (to === from) return;
     const [moved] = g.items.splice(from, 1);
     g.items.splice(to, 0, moved);
     void applyOrder(groups.flatMap((x) => x.items.map((s) => s.id)), true);
+  }
+
+  function moveServer(id: string, delta: -1 | 1) {
+    const g = orderedGroups.find((x) => x.items.some((s) => s.id === id));
+    if (!g) return;
+    const i = g.items.findIndex((s) => s.id === id);
+    reorderWithin(g.tag, i, i + delta);
   }
 
   function resetOrder() {
     if (!servers.length) return;
     if (!confirm('按名称重新排列服务器列表？手动调过的顺序会丢失。')) return;
     void applyOrder([...servers].sort(nameCmp).map((s) => s.id), false);
+  }
+
+  // ---- 拖动排序 ----
+  // 不用 HTML5 draggable：Tauri 默认 dragDropEnabled=true 会截走 webview 的拖放事件（SFTP 传文件靠它），所以走 pointer 事件自绘
+  type Drag = { id: string; tag: string; from: number; y0: number; live: boolean };
+  let drag = $state<Drag | null>(null);
+  // 落点：组内插入用的下标（按挪走之前的行号算）
+  let dropAt = $state<number | null>(null);
+  let listEl: HTMLUListElement | undefined = $state();
+
+  function gripDown(e: PointerEvent, hit: Hit, sec: Section, i: number) {
+    if (e.button !== 0) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    drag = { id: hit.server.id, tag: sec.tag, from: i, y0: e.clientY, live: false };
+    dropAt = null;
+  }
+  function gripMove(e: PointerEvent) {
+    const d = drag;
+    if (!d) return;
+    // 起手先留点容差，免得手抖一下就把双击连接变成挪位置
+    if (!d.live) {
+      if (Math.abs(e.clientY - d.y0) < 4) return;
+      d.live = true;
+    }
+    // 拖到列表上下边缘时自动滚动，条目多的时候不用为了挪一台来回拖好几趟
+    const box = listEl?.getBoundingClientRect();
+    let inEdge = false;
+    if (box && listEl) {
+      inEdge = e.clientY < box.top + 28 || e.clientY > box.bottom - 28;
+      if (e.clientY < box.top + 28) listEl.scrollTop -= 14;
+      else if (e.clientY > box.bottom - 28) listEl.scrollTop += 14;
+    }
+    const li = (document.elementsFromPoint(e.clientX, e.clientY) as HTMLElement[])
+      .find((el) => el.classList.contains('member') && el.dataset.tag === d.tag);
+    if (li) {
+      const r = li.getBoundingClientRect();
+      const idx = Number(li.dataset.idx);
+      dropAt = e.clientY < r.top + r.height / 2 ? idx : idx + 1;
+    } else if (!inEdge) {
+      // 滚到边缘时指针常会压在组头上，这种时候留住上一个落点；真正拖到别的组就清掉，表示不能放这儿
+      dropAt = null;
+    }
+  }
+  function gripUp(e: PointerEvent) {
+    const d = drag, at = dropAt;
+    drag = null; dropAt = null;
+    const el = e.currentTarget as HTMLElement;
+    if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    if (!d?.live || at === null) return;
+    reorderWithin(d.tag, d.from, at);
   }
 
   async function save() {
@@ -749,7 +805,7 @@
       {/if}
       <button onmousedown={noFocus} onclick={() => toggleAside(false)} title="隐藏列表 (Ctrl+B)">⟨</button>
     </div>
-    <ul class="server-list">
+    <ul class="server-list" class:dragging={!!drag?.live} bind:this={listEl}>
       {#each sections as sec (sec.tag)}
         {#if sec.tag !== '' || sections.length > 1}
           <li class="folder-head">
@@ -769,13 +825,24 @@
         {/if}
         {#if searching || !collapsedFolders.includes(sec.tag)}
           {#each sec.items as hit, i (hit.server.id)}
-            <li class="member" class:compact={prefCompactList} oncontextmenu={(e) => openSrvCtx(e, hit.server)}>
+            <li class="member" class:compact={prefCompactList}
+                class:dragging={drag?.id === hit.server.id}
+                class:drop-top={drag?.live && drag.tag === sec.tag && dropAt === i}
+                class:drop-bottom={drag?.live && drag.tag === sec.tag && dropAt === i + 1 && i === sec.items.length - 1}
+                data-tag={sec.tag} data-idx={i}
+                oncontextmenu={(e) => openSrvCtx(e, hit.server)}>
               <button class="server" class:busy={connectingIds.has(hit.server.id)}
                       onmousedown={noFocus}
                       ondblclick={() => connect(hit.server)}
                       onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); connect(hit.server); } }}
                       title={connectingIds.has(hit.server.id) ? '正在建立连接…' : '双击连接 · 右键菜单'}>
                 <span class="titlerow">
+                  {#if !searching}
+                    <span class="grip" title="按住拖动可在组内排序" role="presentation"
+                          onpointerdown={(e) => gripDown(e, hit, sec, i)}
+                          onpointermove={gripMove}
+                          onpointerup={gripUp} onpointercancel={gripUp}>⠿</span>
+                  {/if}
                   {#if hit.server.icon && iconPaths(hit.server.icon)}
                     <span class="sicon"><Icon name={hit.server.icon} size={15} /></span>
                   {/if}
@@ -1241,6 +1308,15 @@
   .acts button { padding: 0 6px; line-height: 1.5; display: flex; align-items: center; justify-content: center; }
   .acts button:disabled { opacity: .3; cursor: default; }
   .acts button:disabled:hover { color: inherit; }
+  /* 拖动手柄：负边距挪进 .server 的左内边距里，不挤名称位置 */
+  .grip { flex-shrink: 0; width: 12px; margin-left: -12px; display: flex; align-items: center;
+    color: #555; font-size: 12px; cursor: grab; touch-action: none; }
+  .grip:hover { color: #8ab4f8; }
+  .server-list.dragging { user-select: none; }
+  .server-list.dragging .grip { cursor: grabbing; }
+  .member.dragging .server { opacity: .45; }
+  .member.drop-top { box-shadow: inset 0 2px 0 0 #4fd6be; }
+  .member.drop-bottom { box-shadow: inset 0 -2px 0 0 #4fd6be; }
   .member .server { padding-left: 22px; }
   .server { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-bottom: 1px solid #2a2a2a; color: #ddd; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
   .server:hover { background: #2d2d2d; }
