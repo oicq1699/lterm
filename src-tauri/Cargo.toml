@@ -1,6 +1,6 @@
 [package]
 name = "lterm"
-version = "0.5.6"
+version = "0.5.7"
 description = "现代 SSH 终端客户端（Rust + Tauri）"
 authors = ["lterm"]
 edition = "2021"
