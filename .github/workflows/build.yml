@@ -70,6 +70,6 @@ jobs:
           files: |
             out/lterm.exe
             out/lterm-linux-x64-portable.tar.gz
-          fail_on_missing: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
