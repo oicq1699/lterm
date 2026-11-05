@@ -798,11 +798,6 @@
   <aside style:display={showAside ? 'flex' : 'none'}>
     <div class="toolbar">
       <input class="search" placeholder="模糊搜索：名称 备注 用户 主机…" bind:value={query} oninput={search} />
-      <button onmousedown={noFocus} onclick={() => { if (showForm) { showForm = false; focusActive(); } else { draft = emptyDraft(); showForm = true; } }} title="添加服务器">＋</button>
-      <button onmousedown={noFocus} onclick={newFolder} title="新建文件夹">⊞</button>
-      {#if manualOrdered}
-        <button onmousedown={noFocus} onclick={resetOrder} title="列表被手动排过序，点此按名称重排">↺</button>
-      {/if}
       <button onmousedown={noFocus} onclick={() => toggleAside(false)} title="隐藏列表 (Ctrl+B)">⟨</button>
     </div>
     <ul class="server-list" class:dragging={!!drag?.live} bind:this={listEl}>
@@ -867,9 +862,15 @@
           {/each}
         {/if}
       {:else}
-        <li class="empty">暂无服务器，点 ＋ 添加</li>
+        <li class="empty">暂无服务器，点下面「＋ 添加」</li>
       {/each}
     </ul>
+    <div class="listbar">
+      <button onmousedown={noFocus} onclick={() => { if (showForm) { showForm = false; focusActive(); } else { draft = emptyDraft(); showForm = true; } }} title="添加服务器">＋ 添加</button>
+      <button onmousedown={noFocus} onclick={newFolder} title="新建文件夹（分组）">⊞ 分组</button>
+      <button onmousedown={noFocus} disabled={!manualOrdered} onclick={resetOrder}
+              title={manualOrdered ? '列表被手动排过序，点此按名称重排' : '列表还没手动排过序'}>↺ 重排</button>
+    </div>
   </aside>
 
   {#if srvCtx}
@@ -1248,8 +1249,14 @@
   main { position: relative; }
   aside { width: 300px; border-right: 1px solid #333; display: flex; flex-direction: column; background: #1e1e1e; color: #ddd; }
   .toolbar { display: flex; gap: 6px; padding: 8px; }
-  .search { flex: 1; padding: 6px; border-radius: 6px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
+  /* 搜索框留了 min-width:0 才肯跟着缩，否则几个按钮就能把它挤到面板外面 */
+  .search { flex: 1; min-width: 0; padding: 6px; border-radius: 6px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .toolbar button { padding: 0 10px; }
+  /* 列表底部工具栏：加服务器、建分组、按名称重排都在这儿，以后往右边排就行 */
+  .listbar { display: flex; gap: 6px; padding: 7px 8px; border-top: 1px solid #2a2a2a; background: #1a1a1a; }
+  .listbar button { flex: 1; padding: 4px 6px; font-size: 12px; }
+  .listbar button:disabled { opacity: .35; cursor: default; }
+  .listbar button:disabled:hover { color: inherit; }
   .formmask { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.55); display: flex; align-items: flex-start; justify-content: center; padding: 40px 12px; }
   .server-form { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; width: 620px; max-width: 94vw; max-height: calc(100vh - 80px); overflow-y: auto; background: #232323; border: 1px solid #444; border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
   .server-form .fhead { display: flex; justify-content: space-between; align-items: center; font-weight: 600; color: #ccc; padding-bottom: 8px; border-bottom: 1px solid #333; font-size: 14px; }
@@ -1412,7 +1419,7 @@
   .server.busy { background: #232c38; cursor: progress; }
   .server .ing { color: #e6a23c; font-size: 12px; font-weight: 400; flex-shrink: 0; }
   .server:focus-visible, .folder:focus-visible, .icon:focus-visible, .del:focus-visible,
-  .search:focus-visible, .toolbar button:focus-visible, .tab:focus-visible {
+  .search:focus-visible, .toolbar button:focus-visible, .listbar button:focus-visible, .tab:focus-visible {
     outline: 2px solid #8ab4f8; outline-offset: -2px;
   }
   /* 终端拿到焦点时描一圈绿边，一眼能看出“现在敲的字会进这里” */
