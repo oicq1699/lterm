@@ -63,13 +63,22 @@ jobs:
           path: out/
 
       # 打标签触发的构建，把便携版挂到该 tag 的 Release 上
-      - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # files 只列本平台那一个：两个平台都列上，另一个 runner 上必然找不到文件，
+      # 而 fail_on_unmatched_files=true 会把「找不到」直接判失败，Release 就建不出来了
+      - name: Upload to Release (Windows)
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'windows-latest'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            out/lterm.exe
-            out/lterm-linux-x64-portable.tar.gz
+          files: out/lterm.exe
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Release (Linux)
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-22.04'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/lterm-linux-x64-portable.tar.gz
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
