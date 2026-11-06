@@ -28,6 +28,10 @@ pub struct Settings {
     pub compact_list: bool,
     /// SFTP 路径框历史目录的下拉条数
     pub sftp_hist: u32,
+    /// SFTP 面板删除文件/目录前弹确认
+    pub confirm_sftp_delete: bool,
+    /// SFTP 传输遇到同名文件时弹确认；关掉就是原来的静默覆盖
+    pub confirm_sftp_overwrite: bool,
     /// 启动时静默检查一次新版本（GitHub Releases）
     pub check_update: bool,
     /// 被「忽略此版本」跳过的版本号，空串 = 没跳过任何版本
@@ -50,6 +54,8 @@ impl Default for Settings {
             confirm_close: true,
             compact_list: false,
             sftp_hist: 8,
+            confirm_sftp_delete: true,
+            confirm_sftp_overwrite: false,
             check_update: true,
             skip_update: String::new(),
         }
@@ -111,6 +117,8 @@ mod tests {
         assert_eq!(st.inner.bright, 0);
         assert!(st.inner.confirm_close, "老配置缺 confirmClose 应默认弹确认");
         assert!(st.inner.check_update, "老配置缺 checkUpdate 应默认开检查");
+        assert!(st.inner.confirm_sftp_delete, "老配置缺 confirmSftpDelete 应默认弹确认");
+        assert!(!st.inner.confirm_sftp_overwrite, "老配置缺 confirmSftpOverwrite 应默认静默覆盖");
         assert_eq!(st.inner.skip_update, "", "老配置没有跳过版本的概念");
 
         let mut s = st.inner.clone();

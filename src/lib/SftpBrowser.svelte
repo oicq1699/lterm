@@ -4,8 +4,14 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { hopPromptLabel, type ChainHop } from '$lib/chainPrompt';
 
-  type Props = { sid: string; profileId: string; password: string | null; wide?: boolean; histMax?: number };
-  let { sid, profileId, password, wide = false, histMax = 8 }: Props = $props();
+  type Props = {
+    sid: string; profileId: string; password: string | null; wide?: boolean; histMax?: number;
+    /** 删除前弹确认（多选只问一次） */
+    confirmDelete?: boolean;
+    /** 传输遇同名文件弹确认；关掉就是静默覆盖 */
+    confirmOverwrite?: boolean;
+  };
+  let { sid, profileId, password, wide = false, histMax = 8, confirmDelete = true, confirmOverwrite = false }: Props = $props();
 
   type Entry = {
     name: string; path: string; size: number; is_dir: boolean; modified: number;
@@ -32,6 +38,8 @@
   let remoteEntries = $state<Entry[]>([]);
   let localSel = $state<Set<string>>(new Set());
   let remoteSel = $state<Set<string>>(new Set());
+  let localAnchor = $state<string | null>(null);
+  let remoteAnchor = $state<string | null>(null);
   let transfers = $state<Transfer[]>([]);
   let localHist = $state<string[]>([]);
   let remoteHist = $state<string[]>([]);
@@ -108,6 +116,7 @@
       localPath = p;
       localEntries = r as Entry[];
       localSel = new Set();
+      localAnchor = null;
       saveState();
       return true;
     } catch (e) { if (!quiet) error = String(e); return false; }
@@ -120,6 +129,7 @@
       remotePath = p;
       remoteEntries = r;
       remoteSel = new Set();
+      remoteAnchor = null;
       saveState();
       return true;
     } catch (e) { if (!quiet) error = String(e); return false; }
@@ -183,11 +193,45 @@
     which === 'local' ? loadLocal(path) : loadRemote(path);
   }
 
-  function toggleSel(which: 'local' | 'remote', path: string, e: MouseEvent) {    const sel = which === 'local' ? localSel : remoteSel;
+  const entriesOf = (which: 'local' | 'remote') => (which === 'local' ? localEntries : remoteEntries);
+
+  function setSel(which: 'local' | 'remote', next: Set<string>, anchor: string | null) {
+    if (which === 'local') { localSel = next; localAnchor = anchor; }
+    else { remoteSel = next; remoteAnchor = anchor; }
+  }
+
+  function toggleSel(which: 'local' | 'remote', path: string, e: MouseEvent) {
+    const sel = which === 'local' ? localSel : remoteSel;
+    const anchor = which === 'local' ? localAnchor : remoteAnchor;
+    const paths = entriesOf(which).map((x) => x.path);
+    const a = anchor ? paths.indexOf(anchor) : -1;
+    if (e.shiftKey && a >= 0) {
+      // Shift 是「从锚点拉到这一行」：整段替换当前选择，锚点不动，方便接着往下拉
+      const b = paths.indexOf(path);
+      setSel(which, new Set(paths.slice(Math.min(a, b), Math.max(a, b) + 1)), anchor);
+      return;
+    }
     const next = new Set(sel);
-    if (e.ctrlKey || e.metaKey) { next.has(path) ? next.delete(path) : next.add(path); }
-    else { next.clear(); next.add(path); }
-    if (which === 'local') localSel = next; else remoteSel = next;
+    if (e.ctrlKey || e.metaKey) {
+      if (next.has(path)) next.delete(path); else next.add(path);
+    } else {
+      next.clear(); next.add(path);
+    }
+    setSel(which, next, path);
+  }
+
+  function selectAll(which: 'local' | 'remote') {
+    const paths = entriesOf(which).map((x) => x.path);
+    setSel(which, new Set(paths), paths[0] ?? null);
+  }
+
+  // Ctrl+A 只挂在列表子树上：终端里的 Ctrl+A 由 xterm 自己的输入区收，
+  // 路径框里的 Ctrl+A 仍是浏览器原生的全选文字
+  function listKey(e: KeyboardEvent, which: 'local' | 'remote') {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return;
+    if ((e.target as HTMLElement | null)?.tagName === 'INPUT') return;
+    e.preventDefault();
+    selectAll(which);
   }
 
   function entryDbl(which: 'local' | 'remote', en: Entry) {
@@ -201,6 +245,7 @@
       void loadRemote(en.path, true).then((ok) => {
         if (ok) return;
         remoteSel = new Set([en.path]);
+        remoteAnchor = en.path;
         downloadSelected();
       });
     } else {
@@ -214,12 +259,21 @@
     return t;
   }
 
+  // 后端遇到同名文件是直接截断覆盖的，所以起传输前拿对面那份已加载的列表比一次名字
+  function askOverwrite(dir: 'up' | 'down', names: string[]): boolean {
+    if (!confirmOverwrite) return true;
+    const exist = dir === 'up' ? remoteEntries : localEntries;
+    const hit = names.filter((n) => exist.some((e) => e.name === n));
+    if (!hit.length) return true;
+    return confirm(`${dir === 'up' ? '上传' : '下载'}会覆盖同名 ${hit.length} 项：${hit.slice(0, 5).join('、')}${hit.length > 5 ? '…' : ''}。要继续吗？`);
+  }
+
   async function uploadSelected() {
     error = '';
+    const items = [...localSel].map((p) => localEntries.find((x) => x.path === p)).filter((x): x is Entry => !!x);
+    if (!items.length || !askOverwrite('up', items.map((e) => e.name))) return;
     try { await ensureOpen(); } catch (e) { error = String(e); return; }
-    for (const p of localSel) {
-      const en = localEntries.find((x) => x.path === p);
-      if (!en) continue;
+    for (const en of items) {
       const target = joinPosix(remotePath, en.name);
       newTransfer(target, 'up');
       invoke('sftp_transfer', { req: { sid, transfer_id: target, from: en.path, to: target }, download: false })
@@ -229,10 +283,10 @@
 
   async function downloadSelected() {
     error = '';
+    const items = [...remoteSel].map((p) => remoteEntries.find((x) => x.path === p)).filter((x): x is Entry => !!x);
+    if (!items.length || !askOverwrite('down', items.map((e) => e.name))) return;
     try { await ensureOpen(); } catch (e) { error = String(e); return; }
-    for (const p of remoteSel) {
-      const en = remoteEntries.find((x) => x.path === p);
-      if (!en) continue;
+    for (const en of items) {
       const target = joinLocal(localPath, en.name);
       newTransfer(target, 'down');
       invoke('sftp_transfer', { req: { sid, transfer_id: target, from: en.path, to: target }, download: true })
@@ -274,17 +328,23 @@
 
   async function del(which: 'local' | 'remote') {
     const sel = which === 'local' ? localSel : remoteSel;
-    const entries = which === 'local' ? localEntries : remoteEntries;
-    for (const p of sel) {
-      const en = entries.find((x) => x.path === p);
-      if (!en) continue;
-      if (!confirm(`删除 ${en.name}${en.is_dir ? '（含内容）' : ''}？`)) continue;
+    const entries = entriesOf(which);
+    const items = [...sel].map((p) => entries.find((x) => x.path === p)).filter((x): x is Entry => !!x);
+    if (!items.length) return;
+    if (confirmDelete) {
+      // 多选只问一次，所以要把「有多少项、里面有目录」讲清楚
+      const dirs = items.filter((e) => e.is_dir).length;
+      const names = items.slice(0, 5).map((e) => e.name).join('、');
+      const more = items.length > 5 ? `… 共 ${items.length} 项` : '';
+      if (!confirm(`删除 ${names}${more}${dirs ? `（其中 ${dirs} 个目录连内容一起删）` : ''}？`)) return;
+    }
+    for (const en of items) {
       try {
-        if (which === 'remote') await invoke('sftp_remove', { sid, path: p, recursive: en.is_dir });
-        else await invoke('local_remove', { path: p, recursive: en.is_dir });
-        which === 'local' ? await loadLocal() : await loadRemote();
+        if (which === 'remote') await invoke('sftp_remove', { sid, path: en.path, recursive: en.is_dir });
+        else await invoke('local_remove', { path: en.path, recursive: en.is_dir });
       } catch (e) { error = String(e); }
     }
+    which === 'local' ? await loadLocal() : await loadRemote();
   }
 
   async function rename(which: 'local' | 'remote') {
@@ -304,6 +364,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   getCurrentWindow().onDragDropEvent((ev) => {
     if (ev.payload.type === 'drop') {
+      if (!askOverwrite('up', ev.payload.paths.map((p) => base(p)))) return;
       for (const path of ev.payload.paths) {
         const name = base(path);
         const target = joinPosix(remotePath, name);
@@ -348,7 +409,7 @@
       {#if wide}
         <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
       {/if}
-      <ul role="listbox" aria-label="文件列表">
+      <ul role="listbox" aria-label="本地文件列表" onkeydown={(e) => listKey(e, 'local')}>
         {#each localEntries as en (en.path)}
           <li class:selected={localSel.has(en.path)} role="option" aria-selected={localSel.has(en.path)} tabindex={0}
               onclick={(e) => toggleSel('local', en.path, e)}
@@ -366,9 +427,9 @@
         {/each}
       </ul>
       <div class="ops">
-        <button onclick={uploadSelected} title="上传选中到远端当前目录">上传 →</button>
+        <button onclick={uploadSelected} title="上传选中到远端当前目录（Ctrl+A 全选本目录）">上传 →</button>
         <button onclick={mkdirLocal}>新建目录</button>
-        <button onclick={() => del('local')}>删除</button>
+        <button onclick={() => del('local')} title="删除选中项（Ctrl+A 全选本目录）">删除</button>
         <button onclick={() => rename('local')}>重命名</button>
       </div>
     </div>
@@ -394,7 +455,7 @@
       {#if wide}
         <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
       {/if}
-      <ul role="listbox" aria-label="文件列表">
+      <ul role="listbox" aria-label="远端文件列表" onkeydown={(e) => listKey(e, 'remote')}>
         {#each remoteEntries as en (en.path)}
           <li class:selected={remoteSel.has(en.path)} role="option" aria-selected={remoteSel.has(en.path)} tabindex={0}
               onclick={(e) => toggleSel('remote', en.path, e)}
@@ -414,9 +475,9 @@
         {/each}
       </ul>
       <div class="ops">
-        <button onclick={downloadSelected}>← 下载</button>
+        <button onclick={downloadSelected} title="下载选中到本地当前目录（Ctrl+A 全选本目录）">← 下载</button>
         <button onclick={mkdirRemote}>新建目录</button>
-        <button onclick={() => del('remote')}>删除</button>
+        <button onclick={() => del('remote')} title="删除选中项（Ctrl+A 全选本目录）">删除</button>
         <button onclick={() => rename('remote')}>重命名</button>
       </div>
     </div>

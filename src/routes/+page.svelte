@@ -71,7 +71,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; checkUpdate: boolean; skipUpdate: string };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; checkUpdate: boolean; skipUpdate: string };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -89,6 +89,8 @@
   let prefConfirmClose = $state(true);
   let prefCompactList = $state(false);
   let prefSftpHist = $state(8);
+  let prefConfirmSftpDelete = $state(true);
+  let prefConfirmSftpOverwrite = $state(false);
   let prefCheckUpdate = $state(true);
   let skipUpdate = $state('');
 
@@ -102,7 +104,9 @@
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
-        sftpHist: prefSftpHist, checkUpdate: prefCheckUpdate, skipUpdate,
+        sftpHist: prefSftpHist, confirmSftpDelete: prefConfirmSftpDelete,
+        confirmSftpOverwrite: prefConfirmSftpOverwrite,
+        checkUpdate: prefCheckUpdate, skipUpdate,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
   }
@@ -683,6 +687,8 @@
       prefConfirmClose = s.confirmClose !== false;
       prefCompactList = !!s.compactList;
       prefSftpHist = Math.min(30, Math.max(3, s.sftpHist || 8));
+      prefConfirmSftpDelete = s.confirmSftpDelete !== false;
+      prefConfirmSftpOverwrite = s.confirmSftpOverwrite === true;
       prefCheckUpdate = s.checkUpdate !== false;
       skipUpdate = s.skipUpdate ?? '';
     } catch { /* 用默认值 */ }
@@ -923,6 +929,8 @@
                  {prefPalette}
                  {prefBright}
                  {prefSftpHist}
+                 {prefConfirmSftpDelete}
+                 {prefConfirmSftpOverwrite}
                  {prefCopyOnSelect}
                  {prefConfirmMultiLine}
                  prefContextMenu={prefContextMenu}
@@ -1028,6 +1036,8 @@
         <label class="ck"><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
         <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认（只影响标签页；窗口上还有连接时，退出总归会问一次）</label>
         <label class="ck"><input type="checkbox" bind:checked={prefCompactList} onchange={saveSettingsSoon} /> 服务器列表紧凑模式（每行只显示标题，编辑/复制/删除走右键菜单）</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefConfirmSftpDelete} onchange={saveSettingsSoon} /> SFTP 面板删除文件前确认（多选只问一次；关掉连目录也不问）</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefConfirmSftpOverwrite} onchange={saveSettingsSoon} /> SFTP 传输覆盖同名文件前确认（关掉就是直接覆盖）</label>
         <div class="srow">
           <span class="lbl">SFTP 历史</span>
           <input class="numin" type="number" min="3" max="30" step="1" value={prefSftpHist} aria-label="路径框历史目录条数"
