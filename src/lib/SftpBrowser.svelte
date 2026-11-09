@@ -26,6 +26,12 @@
     fromLocal: string; fromRemote: string;
   };
   type DirState = { local: string | null; remote: string | null; localHist: string[]; remoteHist: string[] };
+  type EditStatus = 'synced' | 'syncing' | 'conflict' | 'error' | 'missing';
+  type EditInfo = {
+    edit_id: string; remote: string; local_path: string; status: EditStatus;
+    size: number; mtime: number; message: string;
+  };
+  type EditUploadOutcome = { conflict: boolean; size: number; mtime: number; mode: number | null };
 
   const cap = () => Math.min(30, Math.max(1, Math.round(histMax) || 8));
   const withHist = (list: string[], path: string) => [path, ...list.filter((p) => p !== path)].slice(0, cap());
@@ -44,6 +50,10 @@
   let localHist = $state<string[]>([]);
   let remoteHist = $state<string[]>([]);
   let openHist = $state<'' | 'local' | 'remote'>('');
+  let edits = $state<EditInfo[]>([]);
+  type MenuState = { x: number; y: number; which: 'local' | 'remote'; entry: Entry };
+  let menu = $state<MenuState | null>(null);
+  let menuEl: HTMLDivElement | undefined = $state();
   let unlisten: UnlistenFn[] = [];
 
   const fmtSize = (n: number) => n >= 1073741824 ? (n / 1073741824).toFixed(2) + 'G'
@@ -111,6 +121,7 @@
 
   async function loadLocal(path?: string, quiet = false): Promise<boolean> {
     const p = path ?? localPath;
+    menu = null;
     try {
       const r = await invoke<{ name: string; path: string; size: number; is_dir: boolean; modified: number }[]>('local_list', { path: p });
       localPath = p;
@@ -124,6 +135,7 @@
 
   async function loadRemote(path?: string, quiet = false): Promise<boolean> {
     const p = path ?? remotePath;
+    menu = null;
     try {
       const r = await invoke<Entry[]>('sftp_list', { sid, path: p });
       remotePath = p;
@@ -156,6 +168,11 @@
     } catch (e) { error = String(e); }
   }
   init();
+  // 面板重开后恢复编辑会话列表（不依赖 SFTP 已打开）
+  function restoreEdits() {
+    invoke<EditInfo[]>('sftp_edit_list', { sid }).then((r) => { edits = r; }).catch(() => {});
+  }
+  restoreEdits();
 
   listen<{ id: string; done: number; total: number }>('sftp-progress', (ev) => {
     const t = transfers.find((x) => x.id === ev.payload.id);
@@ -175,6 +192,16 @@
       }
     }
   }).then((u) => unlisten.push(u));
+  listen<EditInfo>('sftp-edit-status', (ev) => {
+    const prev = edits.find((e) => e.edit_id === ev.payload.edit_id);
+    upsertEdit(ev.payload);
+    // 同步回远端后刷当前目录的 mtime/size（400ms 内的多次事件合并成一次）
+    const changed = !prev || prev.status !== 'synced' || prev.mtime !== ev.payload.mtime;
+    if (ev.payload.status === 'synced' && changed && inShownRemoteDir(ev.payload.remote)) {
+      clearTimeout(editRefreshTimer);
+      editRefreshTimer = setTimeout(() => { void loadRemote(undefined, true); }, 400);
+    }
+  }).then((u) => unlisten.push(u));
 
   // 传输成功后刷「目标那一端」：上传刷远端、下载刷本地，省得手工点 ⟳
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -188,6 +215,44 @@
     }, 300);
   }
 
+  // ---- 远端临时文件编辑会话 ----
+  let editRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  function upsertEdit(info: EditInfo) {
+    const i = edits.findIndex((e) => e.edit_id === info.edit_id);
+    if (i >= 0) edits[i] = info; else edits = [...edits, info];
+  }
+  // 文件所在远端目录是否就是当前显示目录
+  function inShownRemoteDir(file: string) {
+    const norm = (p: string) => p.replace(/\/+$/, '') || '/';
+    return norm(parentPosix(file)) === norm(remotePath);
+  }
+  function statusLabel(ed: EditInfo) {
+    switch (ed.status) {
+      case 'synced': return `已同步 ${new Date(ed.mtime * 1000).toLocaleTimeString('zh-CN', { hour12: false })}`;
+      case 'syncing': return '同步中…';
+      case 'conflict': return '⚠ 远端已变化';
+      case 'error': return `✗ ${ed.message || '同步失败'}`;
+      case 'missing': return '⚠ 临时文件不存在';
+      default: return ed.status;
+    }
+  }
+  async function openEdit(ed: EditInfo) {
+    try { await invoke('open_with_editor', { path: ed.local_path }); } catch (e) { error = String(e); }
+  }
+  async function syncEdit(ed: EditInfo, force = false) {
+    try {
+      const out = await invoke<EditUploadOutcome>('sftp_edit_upload', { sid, editId: ed.edit_id, force });
+      if (out.conflict) { upsertEdit({ ...ed, status: 'conflict', message: '远端文件已被修改' }); }
+    } catch (e) { error = String(e); }
+  }
+  const forceSync = (ed: EditInfo) => syncEdit(ed, true);
+  async function endEdit(ed: EditInfo, finalUpload: boolean) {
+    try {
+      await invoke('sftp_edit_end', { sid, editId: ed.edit_id, finalUpload });
+      edits = edits.filter((x) => x.edit_id !== ed.edit_id);
+    } catch (e) { error = String(e); } // 冲突时后端保留会话，别从列表里删掉
+  }
+
   function pickHist(which: 'local' | 'remote', path: string) {
     openHist = '';
     which === 'local' ? loadLocal(path) : loadRemote(path);
@@ -199,6 +264,60 @@
     if (which === 'local') { localSel = next; localAnchor = anchor; }
     else { remoteSel = next; remoteAnchor = anchor; }
   }
+
+  // ---- 文件右键菜单（两侧列表共用） ----
+  const CTX_W = 150, CTX_H = 40;
+  function openMenu(e: MouseEvent, which: 'local' | 'remote', en: Entry) {
+    e.preventDefault();
+    e.stopPropagation();
+    const sel = which === 'local' ? localSel : remoteSel;
+    // 右键未选中的行：选择切到这一行；右键已选中的行：保留多选
+    if (!sel.has(en.path)) setSel(which, new Set([en.path]), en.path);
+    menu = {
+      x: Math.max(4, Math.min(e.clientX, window.innerWidth - CTX_W)),
+      y: Math.max(4, Math.min(e.clientY, window.innerHeight - CTX_H)),
+      which, entry: en,
+    };
+  }
+
+  async function menuEdit() {
+    const m = menu;
+    if (!m || m.entry.is_dir) return;
+    menu = null;
+    error = '';
+    try {
+      if (m.which === 'local') {
+        await invoke('open_with_editor', { path: m.entry.path });
+        return;
+      }
+      await ensureOpen();
+      const info = await invoke<EditInfo>('sftp_edit_begin', { sid, remote: m.entry.path });
+      upsertEdit(info);
+      await invoke('open_with_editor', { path: info.local_path });
+    } catch (e) { error = String(e); }
+  }
+
+  $effect(() => {
+    if (!menu) return;
+    // 捕获阶段：菜单开着时点别处、按 Esc、滚动或窗口尺寸变化都要能关
+    const away = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (menuEl && t && menuEl.contains(t)) return;
+      menu = null;
+    };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') menu = null; };
+    const close = () => { menu = null; };
+    window.addEventListener('pointerdown', away, true);
+    window.addEventListener('keydown', esc, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('keydown', esc, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  });
 
   function toggleSel(which: 'local' | 'remote', path: string, e: MouseEvent) {
     const sel = which === 'local' ? localSel : remoteSel;
@@ -378,6 +497,7 @@
 
   onDestroy(() => {
     clearTimeout(refreshTimer);
+    clearTimeout(editRefreshTimer);
     for (const u of unlisten) u();
   });
 </script>
@@ -412,6 +532,7 @@
       <ul role="listbox" aria-label="本地文件列表" onkeydown={(e) => listKey(e, 'local')}>
         {#each localEntries as en (en.path)}
           <li class:selected={localSel.has(en.path)} role="option" aria-selected={localSel.has(en.path)} tabindex={0}
+              oncontextmenu={(e) => openMenu(e, 'local', en)}
               onclick={(e) => toggleSel('local', en.path, e)}
               onkeydown={(e) => e.key === 'Enter' && entryDbl('local', en)}
               ondblclick={() => entryDbl('local', en)}>
@@ -458,6 +579,7 @@
       <ul role="listbox" aria-label="远端文件列表" onkeydown={(e) => listKey(e, 'remote')}>
         {#each remoteEntries as en (en.path)}
           <li class:selected={remoteSel.has(en.path)} role="option" aria-selected={remoteSel.has(en.path)} tabindex={0}
+              oncontextmenu={(e) => openMenu(e, 'remote', en)}
               onclick={(e) => toggleSel('remote', en.path, e)}
               onkeydown={(e) => e.key === 'Enter' && entryDbl('remote', en)}
               ondblclick={() => entryDbl('remote', en)}>
@@ -501,6 +623,39 @@
           {/if}
         </div>
       {/each}
+    </div>
+  {/if}
+  {#if edits.length}
+    <div class="edits">
+      {#each edits as ed (ed.edit_id)}
+        <div class="ed">
+          <span class="ed-name" title={ed.remote}>{base(ed.remote)}</span>
+          <span class="ed-status" class:ok={ed.status === 'synced'} class:warn={ed.status === 'conflict' || ed.status === 'error'} class:busy={ed.status === 'syncing'}>
+            {statusLabel(ed)}
+          </span>
+          <button onclick={() => openEdit(ed)}>打开</button>
+          {#if ed.status === 'conflict'}
+            <button onclick={() => forceSync(ed)}>强制覆盖</button>
+            <button onclick={() => endEdit(ed, false)}>放弃并结束</button>
+          {:else if ed.status === 'error'}
+            <button onclick={() => syncEdit(ed)}>重试</button>
+            <button onclick={() => endEdit(ed, false)}>结束</button>
+          {:else if ed.status === 'missing'}
+            <button onclick={() => endEdit(ed, false)}>结束</button>
+          {:else}
+            <button disabled={ed.status === 'syncing'} onclick={() => syncEdit(ed)}>同步</button>
+            <button onclick={() => endEdit(ed, true)}>结束编辑</button>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#if menu}
+    <div class="ctxmenu" role="menu" aria-label="文件操作" bind:this={menuEl}
+         style:left={menu.x + 'px'} style:top={menu.y + 'px'}>
+      <button role="menuitem" class:off={menu.entry.is_dir} disabled={menu.entry.is_dir}
+              title={menu.entry.is_dir ? '目录不能编辑' : '用外部编辑器打开'}
+              onclick={menuEdit}>编辑（文本）</button>
     </div>
   {/if}
 </div>
@@ -556,4 +711,20 @@
   .pathbar .histpop li { display: block; padding: 4px 8px; font-size: 11px; color: #ccc; cursor: pointer;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pathbar .histpop li:hover, .pathbar .histpop li:focus-visible { background: #2d4f60; outline: none; }
+  .edits { border-top: 1px solid #333; max-height: 110px; overflow-y: auto; padding: 4px; }
+  .ed { display: flex; gap: 6px; align-items: center; padding: 2px 4px; }
+  .ed-name { flex: 0 0 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ed-status { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #999; }
+  .ed-status.ok { color: #7cc47f; }
+  .ed-status.warn { color: #e5a05a; }
+  .ed-status.busy { color: #8ab4f8; }
+  .ed button { padding: 1px 8px; font-size: 11px; }
+  .ctxmenu { position: fixed; z-index: 70; min-width: 150px; background: #262626; border: 1px solid #454545;
+    border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 1px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .55); }
+  .ctxmenu button { display: block; width: 100%; text-align: left; background: none; border: none;
+    color: #ddd; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .ctxmenu button:hover { background: #363636; }
+  .ctxmenu button.off { color: #666; cursor: default; }
+  .ctxmenu button.off:hover { background: none; }
 </style>

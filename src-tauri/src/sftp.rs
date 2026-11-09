@@ -1,11 +1,70 @@
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
+
+/// 编辑会话：远端文件下载到本地临时目录，外部编辑器改动后轮询 + sha256 自动回传。
+const MAX_EDIT_BYTES: u64 = 4 * 1024 * 1024;
+const EDIT_STATUS_EVENT: &str = "sftp-edit-status";
+const DISCONNECTED_MSG: &str = "SFTP 连接已断开";
+
+#[derive(Clone, Serialize)]
+pub struct EditInfo {
+    pub edit_id: String,
+    pub remote: String,
+    pub local_path: String,
+    pub status: String,
+    pub size: u64,
+    pub mtime: u64,
+    pub message: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct EditUploadOutcome {
+    pub conflict: bool,
+    pub size: u64,
+    pub mtime: u64,
+    pub mode: Option<u32>,
+}
+
+pub struct EditSession {
+    pub sid: String,
+    pub remote: String,
+    pub local: String,
+    pub dir: String,
+    pub remote_mtime: u64,
+    pub remote_size: u64,
+    /// 最近一次成功同步内容的 sha256，用来判断本地是否真的变了
+    pub last_hash: String,
+    pub status: String,
+    pub message: String,
+    /// 停掉 watcher 用的取消信号
+    pub cancel: Option<oneshot::Sender<()>>,
+}
+
+impl EditSession {
+    fn info(&self, edit_id: &str) -> EditInfo {
+        EditInfo {
+            edit_id: edit_id.to_string(),
+            remote: self.remote.clone(),
+            local_path: self.local.clone(),
+            status: self.status.clone(),
+            size: self.remote_size,
+            mtime: self.remote_mtime,
+            message: self.message.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct EditRegistry {
+    pub sessions: HashMap<String, EditSession>,
+}
 
 // ---------- 权限位 / 所有者 ----------
 
@@ -111,6 +170,19 @@ pub enum SftpJob {
     Canonicalize {
         path: String,
         reply: oneshot::Sender<Result<String, String>>,
+    },
+    EditDownload {
+        remote: String,
+        local: String,
+        reply: oneshot::Sender<Result<(u64, u64, Option<u32>), String>>,
+    },
+    EditUpload {
+        remote: String,
+        local: String,
+        force: bool,
+        expect_mtime: u64,
+        expect_size: u64,
+        reply: oneshot::Sender<Result<EditUploadOutcome, String>>,
     },
 }
 
@@ -225,6 +297,18 @@ pub fn spawn_worker(
                         let _ = reply.send(sftp.canonicalize(&path).await.map_err(|e| e.to_string()));
                     });
                 }
+                SftpJob::EditDownload { remote, local, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(edit_download(&sftp, &remote, &local).await);
+                    });
+                }
+                SftpJob::EditUpload { remote, local, force, expect_mtime, expect_size, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(edit_upload(&sftp, &remote, &local, force, expect_mtime, expect_size).await);
+                    });
+                }
                 SftpJob::Cancel { transfer_id } => {
                     if let Some(tx) = transfers.remove(&transfer_id) {
                         let _ = tx.send(());
@@ -233,6 +317,25 @@ pub fn spawn_worker(
             }
         }
         let _ = sftp.close().await;
+        // 连接断开后编辑会话已经没有意义：停掉 watcher 并清理临时目录
+        {
+            let state = app.state::<Mutex<EditRegistry>>();
+            let mut guard = state.lock().unwrap();
+            let ids: Vec<String> = guard
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.sid == registry_sid)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in ids {
+                if let Some(mut s) = guard.sessions.remove(&id) {
+                    if let Some(c) = s.cancel.take() {
+                        let _ = c.send(());
+                    }
+                    let _ = std::fs::remove_dir_all(&s.dir);
+                }
+            }
+        }
         if let Ok(mut guard) = app.state::<Mutex<SftpRegistry>>().lock() {
             guard.entries.remove(&registry_sid);
         }
@@ -805,6 +908,548 @@ pub fn sftp_transfer(registry: State<'_, Mutex<SftpRegistry>>, req: TransferReq,
 pub fn sftp_cancel(registry: State<'_, Mutex<SftpRegistry>>, sid: String, transfer_id: String) -> Result<(), String> {
     let tx = job_tx(&registry, &sid)?;
     tx.send(SftpJob::Cancel { transfer_id }).map_err(|_| "worker 已退出".to_string())
+}
+
+// ---------- 远端文件编辑 ----------
+
+fn compute_sha256(path: &str) -> Result<String, String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn mtime_secs(md: &std::fs::Metadata) -> u64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn local_sig(path: &str) -> (u64, u64) {
+    match std::fs::metadata(path) {
+        Ok(md) => (md.len(), mtime_secs(&md)),
+        Err(_) => (0, 0),
+    }
+}
+
+struct LocalSnapshot {
+    exists: bool,
+    size: u64,
+    mtime: u64,
+    hash: String,
+}
+
+fn snapshot_local(path: &str) -> LocalSnapshot {
+    match std::fs::metadata(path) {
+        Ok(md) => LocalSnapshot {
+            exists: true,
+            size: md.len(),
+            mtime: mtime_secs(&md),
+            hash: compute_sha256(path).unwrap_or_default(),
+        },
+        Err(_) => LocalSnapshot {
+            exists: false,
+            size: 0,
+            mtime: 0,
+            hash: String::new(),
+        },
+    }
+}
+
+fn is_binary(path: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 8192];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf[..n].contains(&0u8)
+}
+
+fn remote_basename(remote: &str) -> Result<String, String> {
+    let base = remote
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("file");
+    if base.contains('\\') || base.contains("..") {
+        return Err("非法文件名".to_string());
+    }
+    Ok(base.to_string())
+}
+
+fn new_edit_paths(remote: &str) -> Result<(String, String), String> {
+    let base = remote_basename(remote)?;
+    let root = std::env::temp_dir().join("lterm-edit");
+    std::fs::create_dir_all(&root).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
+    }
+    let dir = root.join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let local = dir.join(&base);
+    Ok((
+        dir.to_string_lossy().into_owned(),
+        local.to_string_lossy().into_owned(),
+    ))
+}
+
+async fn edit_download(
+    sftp: &SftpSession,
+    remote: &str,
+    local: &str,
+) -> Result<(u64, u64, Option<u32>), String> {
+    let meta = sftp
+        .metadata(remote)
+        .await
+        .map_err(|e| format!("远端 stat 失败: {e}"))?;
+    if meta.is_dir() {
+        return Err("目录不能编辑".to_string());
+    }
+    let size = meta.size.unwrap_or(0);
+    if size > MAX_EDIT_BYTES {
+        return Err("文件过大（上限 4 MiB），请下载后编辑".to_string());
+    }
+    let mut noop = |_: u64, _: u64| {};
+    download_core(sftp, remote, local, None, &mut noop).await?;
+    Ok((
+        meta.mtime.unwrap_or(0) as u64,
+        size,
+        meta.permissions.map(|p| p & 0o7777),
+    ))
+}
+
+async fn edit_upload(
+    sftp: &SftpSession,
+    remote: &str,
+    local: &str,
+    force: bool,
+    expect_mtime: u64,
+    expect_size: u64,
+) -> Result<EditUploadOutcome, String> {
+    let meta = sftp
+        .metadata(remote)
+        .await
+        .map_err(|e| format!("远端 stat 失败: {e}"))?;
+    let mtime = meta.mtime.unwrap_or(0) as u64;
+    let size = meta.size.unwrap_or(0);
+    let mode = meta.permissions.map(|p| p & 0o7777);
+    if !force && (mtime != expect_mtime || size != expect_size) {
+        return Ok(EditUploadOutcome {
+            conflict: true,
+            size,
+            mtime,
+            mode,
+        });
+    }
+    let mut noop = |_: u64, _: u64| {};
+    upload_core(sftp, local, remote, None, &mut noop).await?;
+    let meta = sftp
+        .metadata(remote)
+        .await
+        .map_err(|e| format!("远端 stat 失败: {e}"))?;
+    Ok(EditUploadOutcome {
+        conflict: false,
+        size: meta.size.unwrap_or(size),
+        mtime: meta.mtime.unwrap_or(0) as u64,
+        mode: meta.permissions.map(|p| p & 0o7777).or(mode),
+    })
+}
+
+fn update_session(
+    app: &AppHandle,
+    edit_id: &str,
+    f: impl FnOnce(&mut EditSession),
+) -> Option<EditInfo> {
+    let state = app.state::<Mutex<EditRegistry>>();
+    let mut guard = state.lock().unwrap();
+    let s = guard.sessions.get_mut(edit_id)?;
+    f(s);
+    Some(s.info(edit_id))
+}
+
+fn update_and_emit(app: &AppHandle, edit_id: &str, f: impl FnOnce(&mut EditSession)) {
+    if let Some(info) = update_session(app, edit_id, f) {
+        let _ = app.emit(EDIT_STATUS_EVENT, info);
+    }
+}
+
+fn session_snapshot(app: &AppHandle, edit_id: &str) -> Option<(u64, u64, String, String)> {
+    let state = app.state::<Mutex<EditRegistry>>();
+    let guard = state.lock().unwrap();
+    guard.sessions.get(edit_id).map(|s| {
+        (
+            s.remote_mtime,
+            s.remote_size,
+            s.status.clone(),
+            s.last_hash.clone(),
+        )
+    })
+}
+
+/// 命令与 watcher 共用的上传逻辑：冲突/成功/失败都会更新会话并广播状态。
+async fn sync_upload(
+    app: &AppHandle,
+    tx: &mpsc::UnboundedSender<SftpJob>,
+    edit_id: &str,
+    force: bool,
+) -> Result<EditUploadOutcome, String> {
+    let (remote, local, expect_mtime, expect_size) = {
+        let state = app.state::<Mutex<EditRegistry>>();
+        let guard = state.lock().unwrap();
+        let s = guard
+            .sessions
+            .get(edit_id)
+            .ok_or_else(|| "编辑会话不存在".to_string())?;
+        (s.remote.clone(), s.local.clone(), s.remote_mtime, s.remote_size)
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let job = SftpJob::EditUpload {
+        remote,
+        local: local.clone(),
+        force,
+        expect_mtime,
+        expect_size,
+        reply: reply_tx,
+    };
+    if tx.send(job).is_err() {
+        update_and_emit(app, edit_id, |s| {
+            s.status = "error".into();
+            s.message = DISCONNECTED_MSG.into();
+        });
+        return Err(DISCONNECTED_MSG.to_string());
+    }
+    let res = match reply_rx.await {
+        Ok(v) => v,
+        Err(_) => {
+            update_and_emit(app, edit_id, |s| {
+                s.status = "error".into();
+                s.message = "SFTP 响应丢失".into();
+            });
+            return Err("SFTP 响应丢失".to_string());
+        }
+    };
+    let res = res.map_err(|e| {
+        // 注意：这里不能更新 last_hash。last_hash 只代表"已成功同步到远端的内容"，
+        // 失败时保留旧值，否则「结束编辑（同步后结束）」会误判为无改动而丢掉本地修改。
+        update_and_emit(app, edit_id, |s| {
+            s.status = "error".into();
+            s.message = e.clone();
+        });
+        e
+    })?;
+    if res.conflict {
+        update_and_emit(app, edit_id, |s| {
+            s.status = "conflict".into();
+            s.message = "远端文件已被修改".into();
+        });
+        return Ok(res);
+    }
+    let hash = compute_sha256(&local).unwrap_or_default();
+    update_and_emit(app, edit_id, |s| {
+        s.last_hash = hash;
+        s.remote_mtime = res.mtime;
+        s.remote_size = res.size;
+        s.status = "synced".into();
+        s.message = String::new();
+    });
+    Ok(res)
+}
+
+struct EditWatch {
+    app: AppHandle,
+    edit_id: String,
+    tx: mpsc::UnboundedSender<SftpJob>,
+    local: String,
+    baseline_sig: (u64, u64),
+    baseline_hash: String,
+}
+
+fn spawn_watcher(w: EditWatch, mut cancel_rx: oneshot::Receiver<()>) {
+    tauri::async_runtime::spawn(async move {
+        let mut last_sig = w.baseline_sig;
+        let mut last_hash = w.baseline_hash;
+        let mut stable: u32 = 0;
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(800)) => {}
+            }
+            let path = w.local.clone();
+            let snap = match tokio::task::spawn_blocking(move || snapshot_local(&path)).await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if !snap.exists {
+                update_and_emit(&w.app, &w.edit_id, |s| {
+                    s.status = "missing".into();
+                    s.message = "本地文件已丢失".into();
+                });
+                break;
+            }
+            let sig = (snap.size, snap.mtime);
+            if sig == last_sig {
+                stable += 1;
+            } else {
+                last_sig = sig;
+                stable = 0;
+                continue;
+            }
+            if stable < 1 {
+                continue;
+            }
+            if snap.hash == last_hash {
+                continue;
+            }
+            let Some((_, _, status, sess_hash)) = session_snapshot(&w.app, &w.edit_id) else {
+                break;
+            };
+            if status == "conflict" {
+                continue;
+            }
+            if snap.hash == sess_hash {
+                last_hash = snap.hash;
+                continue;
+            }
+            update_and_emit(&w.app, &w.edit_id, |s| {
+                s.status = "syncing".into();
+                s.message = String::new();
+            });
+            match sync_upload(&w.app, &w.tx, &w.edit_id, false).await {
+                Ok(out) => {
+                    if !out.conflict {
+                        last_hash = snap.hash;
+                    }
+                }
+                Err(e) => {
+                    if e == DISCONNECTED_MSG {
+                        break;
+                    }
+                    last_hash = snap.hash;
+                }
+            }
+        }
+    });
+}
+
+#[tauri::command]
+pub async fn sftp_edit_begin(
+    app: AppHandle,
+    registry: State<'_, Mutex<SftpRegistry>>,
+    edits: State<'_, Mutex<EditRegistry>>,
+    sid: String,
+    remote: String,
+) -> Result<EditInfo, String> {
+    let tx = job_tx(&registry, &sid)?;
+    let (dir, local) = new_edit_paths(&remote)?;
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let job = SftpJob::EditDownload {
+        remote: remote.clone(),
+        local: local.clone(),
+        reply: reply_tx,
+    };
+    if tx.send(job).is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err("SFTP worker 已退出".to_string());
+    }
+    let (mtime, size, _mode) = match reply_rx.await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e);
+        }
+        Err(_) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("SFTP 响应丢失".to_string());
+        }
+    };
+    if is_binary(&local) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err("疑似二进制文件，无法文本编辑".to_string());
+    }
+    let baseline = compute_sha256(&local).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&dir);
+        e
+    })?;
+    let init_sig = local_sig(&local);
+    let edit_id = uuid::Uuid::new_v4().to_string();
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    let info = {
+        let mut guard = edits.lock().unwrap();
+        let session = EditSession {
+            sid: sid.clone(),
+            remote: remote.clone(),
+            local: local.clone(),
+            dir: dir.clone(),
+            remote_mtime: mtime,
+            remote_size: size,
+            last_hash: baseline.clone(),
+            status: "synced".to_string(),
+            message: String::new(),
+            cancel: Some(cancel_tx),
+        };
+        let info = session.info(&edit_id);
+        guard.sessions.insert(edit_id.clone(), session);
+        info
+    };
+    spawn_watcher(
+        EditWatch {
+            app: app.clone(),
+            edit_id,
+            tx,
+            local,
+            baseline_sig: init_sig,
+            baseline_hash: baseline,
+        },
+        cancel_rx,
+    );
+    let _ = app.emit(EDIT_STATUS_EVENT, info.clone());
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn sftp_edit_upload(
+    app: AppHandle,
+    registry: State<'_, Mutex<SftpRegistry>>,
+    edits: State<'_, Mutex<EditRegistry>>,
+    sid: String,
+    edit_id: String,
+    force: bool,
+) -> Result<EditUploadOutcome, String> {
+    let _ = &edits;
+    let tx = job_tx(&registry, &sid)?;
+    sync_upload(&app, &tx, &edit_id, force).await
+}
+
+#[tauri::command]
+pub async fn sftp_edit_end(
+    app: AppHandle,
+    registry: State<'_, Mutex<SftpRegistry>>,
+    edits: State<'_, Mutex<EditRegistry>>,
+    sid: String,
+    edit_id: String,
+    final_upload: bool,
+) -> Result<(), String> {
+    let snap = {
+        let guard = edits.lock().unwrap();
+        guard
+            .sessions
+            .get(&edit_id)
+            .map(|s| (s.local.clone(), s.last_hash.clone()))
+    };
+    let Some((local, last_hash)) = snap else {
+        return Ok(());
+    };
+    if final_upload {
+        let cur = compute_sha256(&local)?;
+        if cur != last_hash {
+            let tx = job_tx(&registry, &sid)?;
+            let out = sync_upload(&app, &tx, &edit_id, false).await?;
+            if out.conflict {
+                return Err("远端文件已被修改，未上传".to_string());
+            }
+        }
+    }
+    let mut guard = edits.lock().unwrap();
+    if let Some(mut s) = guard.sessions.remove(&edit_id) {
+        if let Some(c) = s.cancel.take() {
+            let _ = c.send(());
+        }
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn sftp_edit_list(edits: State<'_, Mutex<EditRegistry>>, sid: String) -> Vec<EditInfo> {
+    let guard = edits.lock().unwrap();
+    guard
+        .sessions
+        .iter()
+        .filter(|(_, s)| s.sid == sid)
+        .map(|(id, s)| s.info(id))
+        .collect()
+}
+
+#[cfg(unix)]
+fn shell_quote_unix(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+#[cfg(not(unix))]
+fn shell_quote_windows(path: &str) -> String {
+    format!("\"{}\"", path.replace('"', "\\\""))
+}
+
+#[cfg(unix)]
+fn build_editor_line(cmd: &str, path: &str) -> String {
+    let quoted = shell_quote_unix(path);
+    if cmd.contains("{file}") {
+        cmd.replace("{file}", &quoted)
+    } else {
+        format!("{cmd} {quoted}")
+    }
+}
+
+#[cfg(not(unix))]
+fn build_editor_line(cmd: &str, path: &str) -> String {
+    let quoted = shell_quote_windows(path);
+    if cmd.contains("{file}") {
+        cmd.replace("{file}", &quoted)
+    } else {
+        format!("{cmd} {quoted}")
+    }
+}
+
+#[tauri::command]
+pub fn open_with_editor(
+    settings: State<'_, Mutex<crate::settings::AppSettings>>,
+    path: String,
+) -> Result<(), String> {
+    let raw = settings.lock().unwrap().inner.edit_cmd.clone();
+    let cmd = raw.trim();
+    if cmd.is_empty() {
+        return tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string());
+    }
+    let line = build_editor_line(cmd, &path);
+    #[cfg(unix)]
+    let spawned = std::process::Command::new("sh").arg("-c").arg(&line).spawn();
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(&line)
+            .creation_flags(0x08000000)
+            .spawn()
+    };
+    #[cfg(not(any(unix, windows)))]
+    let spawned: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "当前平台不支持外部编辑器",
+    ));
+    let mut child = spawned.map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 

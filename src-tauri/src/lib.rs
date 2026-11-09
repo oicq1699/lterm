@@ -135,6 +135,8 @@ pub fn run() {
             let host_keys = hostkeys::HostKeys::load(&dir)?;
             app.manage(Arc::new(Mutex::new(host_keys)));
             app.manage(Mutex::new(sftp::SftpRegistry::default()));
+            app.manage(Mutex::new(sftp::EditRegistry::default()));
+            let _ = std::fs::remove_dir_all(std::env::temp_dir().join("lterm-edit"));
             app.manage(Mutex::new(dirstate::DirState::load(&dir)?));
             let settings = settings::AppSettings::load(&dir)?;
             app.manage(Mutex::new(settings));
@@ -172,6 +174,11 @@ pub fn run() {
             sftp::sftp_rename,
             sftp::sftp_transfer,
             sftp::sftp_cancel,
+            sftp::sftp_edit_begin,
+            sftp::sftp_edit_upload,
+            sftp::sftp_edit_end,
+            sftp::sftp_edit_list,
+            sftp::open_with_editor,
             sftp::local_list,
             sftp::local_remove,
             sftp::local_rename,

@@ -71,7 +71,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; checkUpdate: boolean; skipUpdate: string };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -91,6 +91,7 @@
   let prefSftpHist = $state(8);
   let prefConfirmSftpDelete = $state(true);
   let prefConfirmSftpOverwrite = $state(false);
+  let prefEditCmd = $state('');
   let prefCheckUpdate = $state(true);
   let skipUpdate = $state('');
 
@@ -106,6 +107,7 @@
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
         sftpHist: prefSftpHist, confirmSftpDelete: prefConfirmSftpDelete,
         confirmSftpOverwrite: prefConfirmSftpOverwrite,
+        editCmd: prefEditCmd,
         checkUpdate: prefCheckUpdate, skipUpdate,
       } satisfies Settings });
     } catch { /* 保存失败不阻塞界面 */ }
@@ -689,6 +691,7 @@
       prefSftpHist = Math.min(30, Math.max(3, s.sftpHist || 8));
       prefConfirmSftpDelete = s.confirmSftpDelete !== false;
       prefConfirmSftpOverwrite = s.confirmSftpOverwrite === true;
+      prefEditCmd = s.editCmd ?? '';
       prefCheckUpdate = s.checkUpdate !== false;
       skipUpdate = s.skipUpdate ?? '';
     } catch { /* 用默认值 */ }
@@ -1044,6 +1047,13 @@
                  onchange={setSftpHist} />
           <span class="unit">条（3~30）· 路径框 ▾ 里记多少个传过的目录</span>
         </div>
+        <div class="srow">
+          <span class="lbl">SFTP 编辑器</span>
+          <input class="fontin" placeholder="默认（系统关联程序）" value={prefEditCmd}
+                 aria-label="SFTP 外部编辑器命令"
+                 onchange={(e) => { prefEditCmd = (e.target as HTMLInputElement).value; saveSettingsSoon(); }} />
+        </div>
+        <div class="hint">右键 SFTP 文件「编辑（文本）」会用此程序打开临时文件，保存后约 1-2 秒自动同步回远端。支持 <code>{'{file}'}</code> 占位符（留空则用系统默认程序），例如 <code>code --wait {'{file}'}</code>、<code>gedit {'{file}'}</code>。同步由应用轮询完成，不依赖编辑器是否阻塞。</div>
 
         <div class="sec">键盘</div>
         <div class="srow">

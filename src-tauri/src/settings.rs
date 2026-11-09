@@ -36,6 +36,8 @@ pub struct Settings {
     pub check_update: bool,
     /// 被「忽略此版本」跳过的版本号，空串 = 没跳过任何版本
     pub skip_update: String,
+    /// 编辑远端文件使用的外部编辑器命令，空串 = 用系统默认关联程序
+    pub edit_cmd: String,
 }
 
 impl Default for Settings {
@@ -58,6 +60,7 @@ impl Default for Settings {
             confirm_sftp_overwrite: false,
             check_update: true,
             skip_update: String::new(),
+            edit_cmd: String::new(),
         }
     }
 }
@@ -120,6 +123,7 @@ mod tests {
         assert!(st.inner.confirm_sftp_delete, "老配置缺 confirmSftpDelete 应默认弹确认");
         assert!(!st.inner.confirm_sftp_overwrite, "老配置缺 confirmSftpOverwrite 应默认静默覆盖");
         assert_eq!(st.inner.skip_update, "", "老配置没有跳过版本的概念");
+        assert_eq!(st.inner.edit_cmd, "", "老配置缺 editCmd 应默认空串");
 
         let mut s = st.inner.clone();
         s.ctrl_enter = "same".into();
