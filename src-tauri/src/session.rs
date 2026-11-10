@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::hostkeys::{fingerprint, HostKeys, KeyStatus};
+use crate::secrets::SecretStore;
 use crate::store::{ServerProfile, ServerStore};
 
 pub struct LtermHandler {
@@ -152,6 +153,7 @@ pub async fn connect(
     app: AppHandle,
     registry: State<'_, Mutex<Registry>>,
     store: State<'_, Mutex<ServerStore>>,
+    secrets: State<'_, Mutex<SecretStore>>,
     profile_id: String,
     password: Option<String>,
     proxy_passwords: Option<HashMap<String, String>>,
@@ -173,7 +175,14 @@ pub async fn connect(
 
     let id: String = uuid::Uuid::new_v4().to_string();
 
-    let mut passwords = proxy_passwords.unwrap_or_default();
+    let mut passwords = {
+        let st = store.lock().unwrap();
+        let sec = secrets.lock().unwrap();
+        sec.resolve_all(&st)
+    };
+    if let Some(pp) = proxy_passwords {
+        passwords.extend(pp);
+    }
     if let Some(pw) = password {
         passwords.insert(profile_id.clone(), pw);
     }

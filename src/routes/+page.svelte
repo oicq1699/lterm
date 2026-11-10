@@ -24,7 +24,7 @@
     created_at: number; updated_at: number;
   };
   type Hit = { server: Profile; score: number };
-  type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null };
+  type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null; passwords: Record<string, string> };
 
   let servers: Profile[] = $state([]);
   let folders: string[] = $state([]);
@@ -35,6 +35,9 @@
   let showForm = $state(false);
   let showIconPicker = $state(false);
   let draft: Profile = $state(emptyDraft());
+  let draftSecret = $state('');
+  let draftSavePw = $state(false);
+  let draftClearPw = $state(false);
   let error = $state('');
 
   let tabs = $state<Tab[]>([]);
@@ -71,7 +74,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string; sftpWindow: string };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -89,6 +92,7 @@
   let prefConfirmClose = $state(true);
   let prefCompactList = $state(false);
   let prefSftpHist = $state(8);
+  let prefSftpWindow = $state('embedded');
   let prefConfirmSftpDelete = $state(true);
   let prefConfirmSftpOverwrite = $state(false);
   let prefEditCmd = $state('');
@@ -105,7 +109,7 @@
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
-        sftpHist: prefSftpHist, confirmSftpDelete: prefConfirmSftpDelete,
+        sftpHist: prefSftpHist, sftpWindow: prefSftpWindow, confirmSftpDelete: prefConfirmSftpDelete,
         confirmSftpOverwrite: prefConfirmSftpOverwrite,
         editCmd: prefEditCmd,
         checkUpdate: prefCheckUpdate, skipUpdate,
@@ -236,10 +240,13 @@
   }
   function focusEl(el: HTMLInputElement) { el.focus(); }
 
+  let savedPwIds = $state<Set<string>>(new Set());
+
   async function refresh() {
     servers = (await invoke<Profile[]>('list_servers')).map(norm);
     folders = await invoke<string[]>('list_folders');
     manualOrdered = await invoke<boolean>('get_manual_order');
+    savedPwIds = new Set(await invoke<string[]>('list_saved_password_ids'));
     search();
   }
 
@@ -411,7 +418,13 @@
 
   async function save() {
     try {
-      await invoke('upsert_server', { profile: draft });
+      const saved = await invoke<Profile>('upsert_server', { profile: draft });
+      const wantsSecret = draft.protocol === 'rdp' || draft.auth_method === 'password' || draft.auth_method === 'key';
+      if (draftClearPw) await invoke('set_server_secret', { id: saved.id, secret: null });
+      else if (wantsSecret && draftSecret && draftSavePw) await invoke('set_server_secret', { id: saved.id, secret: draftSecret });
+      draftSecret = '';
+      draftSavePw = false;
+      draftClearPw = false;
       closeForm();
       await refresh();
     } catch (e) { error = String(e); }
@@ -421,11 +434,17 @@
   function closeForm() {
     showForm = false;
     draft = emptyDraft();
+    draftSecret = '';
+    draftSavePw = false;
+    draftClearPw = false;
     focusActive();
   }
 
   function edit(p: Profile) {
     draft = { ...p };
+    draftSecret = '';
+    draftSavePw = false;
+    draftClearPw = false;
     showForm = true;
   }
 
@@ -462,6 +481,9 @@
   // 复制只是把配置载入编辑表单（id 置空、名称加“复制”后缀），点保存才真正新增，取消则不留痕
   function duplicate(p: Profile) {
     draft = { ...p, id: '', name: copyName(p.name), created_at: 0, updated_at: 0 };
+    draftSecret = '';
+    draftSavePw = false;
+    draftClearPw = false;
     showForm = true;
   }
 
@@ -512,6 +534,7 @@
     } catch (e) { error = String(e); return; }
     const pwMap: Record<string, string> = {};
     for (const h of chain) {
+      if (h.has_saved_secret) continue;
       const label = hopPromptLabel(h);
       if (!label) continue;
       const pw = await askPassword(label);
@@ -523,7 +546,7 @@
       const sid = await invoke<string>('connect', {
         profileId: p.id, password: pwMap[p.id] ?? null, proxyPasswords: pwMap, cols, rows,
       });
-      tabs = [...tabs, { sid, profile: p, alive: true, password: pwMap[p.id] ?? null }];
+      tabs = [...tabs, { sid, profile: p, alive: true, password: pwMap[p.id] ?? null, passwords: pwMap }];
       activeIdx = tabs.length - 1;
       flushNotices();
       focusActive();
@@ -544,6 +567,7 @@
       catch (e) { error = String(e); return; }
       for (const h of chain) {
         if (h.id === p.id) continue;
+        if (h.has_saved_secret) continue;
         const label = hopPromptLabel(h, '跳板密码');
         if (!label) continue;
         const pw = await askPassword(label);
@@ -552,7 +576,7 @@
       }
     }
     let pw: string | null = null;
-    if (!isWindowsUA) {
+    if (!isWindowsUA && !savedPwIds.has(p.id)) {
       const typed = await askPassword(`密码 (${p.name} · ${p.username}@${p.host}:${p.port})`);
       if (typed === null) return;
       pw = typed;
@@ -689,6 +713,7 @@
       prefConfirmClose = s.confirmClose !== false;
       prefCompactList = !!s.compactList;
       prefSftpHist = Math.min(30, Math.max(3, s.sftpHist || 8));
+      prefSftpWindow = s.sftpWindow === 'window' ? 'window' : 'embedded';
       prefConfirmSftpDelete = s.confirmSftpDelete !== false;
       prefConfirmSftpOverwrite = s.confirmSftpOverwrite === true;
       prefEditCmd = s.editCmd ?? '';
@@ -926,6 +951,9 @@
         <Session sessionId={t.sid}
                  profileId={t.profile.id}
                  sessionPassword={t.password}
+                 sessionPasswords={t.passwords}
+                 prefSftpWindow={prefSftpWindow}
+                 profileName={t.profile.name}
                  {fontFamily}
                  active={i === activeIdx}
                  {fontSize}
@@ -1048,6 +1076,13 @@
           <span class="unit">条（3~30）· 路径框 ▾ 里记多少个传过的目录</span>
         </div>
         <div class="srow">
+          <span class="lbl">SFTP 打开方式</span>
+          <select class="ctlsel" bind:value={prefSftpWindow} onchange={saveSettingsSoon}>
+            <option value="embedded">内嵌面板</option>
+            <option value="window">独立窗口</option>
+          </select>
+        </div>
+        <div class="srow">
           <span class="lbl">SFTP 编辑器</span>
           <input class="fontin" placeholder="默认（系统关联程序）" value={prefEditCmd}
                  aria-label="SFTP 外部编辑器命令"
@@ -1159,10 +1194,56 @@
             </div>
             <p class="hint">路径可以 ~ 开头。支持 OpenSSH、PEM（PKCS#1/PKCS#8）和 PuTTY 的 .ppk；私钥带口令的，连接时会单独问一次口令，口令只在这次会话里用，不写进配置文件。</p>
           {/if}
+          {#if draft.auth_method === 'password'}
+            <div class="field">
+              <label class="lab" for="f-pw">密码</label>
+              <div class="ctrl">
+                <input id="f-pw" type="password" autocomplete="new-password" bind:value={draftSecret}
+                       placeholder={savedPwIds.has(draft.id) ? '已保存（留空保持不变）' : '输入密码（可选）'} />
+              </div>
+            </div>
+          {:else if draft.auth_method === 'key'}
+            <div class="field">
+              <label class="lab" for="f-pass">私钥口令（可选）</label>
+              <div class="ctrl">
+                <input id="f-pass" type="password" autocomplete="new-password" bind:value={draftSecret}
+                       placeholder={savedPwIds.has(draft.id) ? '已保存（留空保持不变）' : '输入密码（可选）'} />
+              </div>
+            </div>
+          {/if}
+          {#if draft.auth_method === 'password' || draft.auth_method === 'key'}
+            <label class="ck"><input type="checkbox" bind:checked={draftSavePw} /> 保存到本机（明文）</label>
+            {#if savedPwIds.has(draft.id)}
+              <div class="field">
+                <span class="lab"></span>
+                <div class="ctrl">
+                  <button type="button" onclick={() => { draftClearPw = true; draftSecret = ''; }}>清除已保存密码</button>
+                </div>
+              </div>
+            {/if}
+            <p class="hint">密码以明文存放在 data/secrets.json，仅建议在受信任设备使用；不勾选保存则下次连接会再次询问。Windows RDP 仍由系统客户端弹窗。</p>
+          {/if}
         {/if}
         {#if draft.protocol === 'rdp'}
           <div class="group">
             <span class="gtitle">远程桌面（交给系统客户端 xfreerdp / mstsc）</span>
+            <div class="field">
+              <label class="lab" for="f-rdp-pw">密码</label>
+              <div class="ctrl">
+                <input id="f-rdp-pw" type="password" autocomplete="new-password" bind:value={draftSecret}
+                       placeholder={savedPwIds.has(draft.id) ? '已保存（留空保持不变）' : '输入密码（可选）'} />
+              </div>
+            </div>
+            <label class="ck"><input type="checkbox" bind:checked={draftSavePw} /> 保存到本机（明文）</label>
+            {#if savedPwIds.has(draft.id)}
+              <div class="field">
+                <span class="lab"></span>
+                <div class="ctrl">
+                  <button type="button" onclick={() => { draftClearPw = true; draftSecret = ''; }}>清除已保存密码</button>
+                </div>
+              </div>
+            {/if}
+            <p class="hint">密码以明文存放在 data/secrets.json，仅建议在受信任设备使用；不勾选保存则下次连接会再次询问。Windows RDP 仍由系统客户端弹窗。</p>
             <div class="field">
               <label class="lab" for="f-sec">兼容方式</label>
               <div class="ctrl">
@@ -1293,6 +1374,7 @@
   .port { width: 66px; flex: 0 0 auto !important; }
   .server-form .hint { margin: 0; font-size: 11px; color: #777; line-height: 1.5; }
   .server-form .chk { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #bbb; cursor: pointer; }
+  .server-form .ck { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #bbb; cursor: pointer; margin-left: 82px; }
   .group { display: flex; flex-direction: column; gap: 9px; padding: 11px 12px 12px; border: 1px solid #333; border-radius: 8px; background: #1e1e1e; }
   .gtitle { color: #8ab4f8; font-size: 12px; font-weight: 600; }
   .fbtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }

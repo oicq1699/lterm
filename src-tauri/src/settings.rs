@@ -38,6 +38,8 @@ pub struct Settings {
     pub skip_update: String,
     /// 编辑远端文件使用的外部编辑器命令，空串 = 用系统默认关联程序
     pub edit_cmd: String,
+    /// SFTP 打开方式：embedded=标签内嵌面板，window=独立窗口
+    pub sftp_window: String,
 }
 
 impl Default for Settings {
@@ -61,6 +63,7 @@ impl Default for Settings {
             check_update: true,
             skip_update: String::new(),
             edit_cmd: String::new(),
+            sftp_window: "embedded".into(),
         }
     }
 }
@@ -124,6 +127,7 @@ mod tests {
         assert!(!st.inner.confirm_sftp_overwrite, "老配置缺 confirmSftpOverwrite 应默认静默覆盖");
         assert_eq!(st.inner.skip_update, "", "老配置没有跳过版本的概念");
         assert_eq!(st.inner.edit_cmd, "", "老配置缺 editCmd 应默认空串");
+        assert_eq!(st.inner.sftp_window, "embedded", "老配置缺 sftpWindow 应默认内嵌");
 
         let mut s = st.inner.clone();
         s.ctrl_enter = "same".into();

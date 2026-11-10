@@ -1,5 +1,6 @@
 //! ProxyJump：经已保存服务器的 direct-tcpip 通道逐跳建立连接。
 use crate::auth;
+use crate::secrets::SecretStore;
 use crate::session::LtermHandler;
 use crate::store::{AuthMethod, ServerProfile, ServerStore};
 use russh::client;
@@ -117,21 +118,29 @@ pub struct ProfileBrief {
     pub key_path: Option<String>,
     /// 私钥是否需要口令：前端据此决定问不问，明文密钥不打扰用户
     pub key_passphrase_required: bool,
+    /// 该服务器是否已保存密码（仅告知有无，不下发密码）
+    pub has_saved_secret: bool,
 }
 
 /// 前端据此逐跳收集密码
 #[tauri::command]
 pub fn get_proxy_chain(
     store: State<'_, Mutex<ServerStore>>,
+    secrets: State<'_, Mutex<SecretStore>>,
     profile_id: String,
 ) -> Result<Vec<ProfileBrief>, String> {
-    let st = store.lock().unwrap();
-    let target = st
-        .servers
-        .iter()
-        .find(|s| s.id == profile_id)
-        .ok_or_else(|| format!("未找到服务器 {profile_id}"))?;
-    Ok(resolve_chain(&st, target)?
+    // 先在内部作用域收集克隆出的链，释放 store 锁后再锁 secrets，避免嵌套锁
+    let chain: Vec<ServerProfile> = {
+        let st = store.lock().unwrap();
+        let target = st
+            .servers
+            .iter()
+            .find(|s| s.id == profile_id)
+            .ok_or_else(|| format!("未找到服务器 {profile_id}"))?;
+        resolve_chain(&st, target)?
+    };
+    let sec = secrets.lock().unwrap();
+    Ok(chain
         .iter()
         .map(|p| ProfileBrief {
             id: p.id.clone(),
@@ -142,6 +151,7 @@ pub fn get_proxy_chain(
             auth_method: p.auth_method,
             key_path: p.key_path.clone(),
             key_passphrase_required: crate::auth::key_needs_passphrase(p.key_path.as_deref()),
+            has_saved_secret: sec.has(&p.id),
         })
         .collect())
 }

@@ -7,6 +7,7 @@ pub mod hostkeys;
 pub mod jump;
 pub mod keyfile;
 pub mod rdp;
+pub mod secrets;
 pub mod session;
 pub mod settings;
 pub mod sftp;
@@ -131,6 +132,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let store = ServerStore::load(&dir)?;
             app.manage(Mutex::new(store));
+            app.manage(Mutex::new(secrets::SecretStore::load(&dir)?));
             app.manage(Mutex::new(session::Registry::default()));
             let host_keys = hostkeys::HostKeys::load(&dir)?;
             app.manage(Arc::new(Mutex::new(host_keys)));
@@ -167,6 +169,7 @@ pub fn run() {
             session::forward_del,
             session::forward_list,
             sftp::sftp_open,
+            sftp::open_sftp_window,
             sftp::sftp_list,
             sftp::sftp_canonicalize,
             sftp::sftp_mkdir,
@@ -196,6 +199,8 @@ pub fn run() {
             clipboard::clipboard_write,
             jump::get_proxy_chain,
             rdp::open_rdp,
+            secrets::list_saved_password_ids,
+            secrets::set_server_secret,
             toggle_devtools,
         ])
         .run(tauri::generate_context!())

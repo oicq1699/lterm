@@ -298,9 +298,15 @@ pub fn upsert_server(
 #[tauri::command]
 pub fn delete_server(
     state: tauri::State<'_, std::sync::Mutex<ServerStore>>,
+    secrets: tauri::State<'_, std::sync::Mutex<crate::secrets::SecretStore>>,
     id: String,
 ) -> Result<bool, String> {
-    state.lock().unwrap().remove(&id)
+    let removed = state.lock().unwrap().remove(&id)?;
+    if removed {
+        // 服务器已从列表移除，顺带清掉保存的密码；清理失败不影响删除结果
+        let _ = secrets.lock().unwrap().remove(&id);
+    }
+    Ok(removed)
 }
 
 /// 列表是否被手动排过序（决定前端按数组顺序还是按名称显示）

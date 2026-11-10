@@ -4,6 +4,8 @@ export type ChainHop = {
   auth_method: 'password' | 'key' | 'agent';
   key_path?: string | null;
   key_passphrase_required?: boolean;
+  /** 后端已有保存的口令，连接时无需再问 */
+  has_saved_secret?: boolean;
 };
 
 /**

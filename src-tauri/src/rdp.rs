@@ -22,6 +22,7 @@ const INSTALL_HINT: &str = "未检测到 xfreerdp3 / xfreerdp，请安装系统 
 #[tauri::command]
 pub async fn open_rdp(
     store: State<'_, Mutex<ServerStore>>,
+    secrets: State<'_, Mutex<crate::secrets::SecretStore>>,
     app: tauri::AppHandle,
     profile_id: String,
     password: Option<String>,
@@ -35,19 +36,26 @@ pub async fn open_rdp(
             .cloned()
             .ok_or_else(|| format!("未找到服务器 {profile_id}"))?
     };
+    let mut passwords = {
+        let st = store.lock().unwrap();
+        let sec = secrets.lock().unwrap();
+        sec.resolve_all(&st)
+    };
+    passwords.extend(proxy_passwords);
     // 配了跳板机就先经 SSH 转发到本地端口，RDP 客户端只面对 127.0.0.1
     let tunnel = if profile.proxy_jump.is_some() {
-        Some(crate::tunnel::open(app, &store, &profile, &proxy_passwords).await?)
+        Some(crate::tunnel::open(app, &store, &profile, &passwords).await?)
     } else {
         None
     };
+    let target_pw = password.or_else(|| passwords.get(&profile_id).cloned());
     let mut target = profile;
     if let Some(t) = &tunnel {
         target.host = "127.0.0.1".into();
         target.port = t.port;
     }
     // 拉起外部进程要等一秒级时间确认它没立刻退出，放阻塞线程池，别卡住主线程
-    tauri::async_runtime::spawn_blocking(move || launch_with(&target, password, tunnel))
+    tauri::async_runtime::spawn_blocking(move || launch_with(&target, target_pw, tunnel))
         .await
         .map_err(|e| format!("RDP 启动任务失败: {e}"))?
 }

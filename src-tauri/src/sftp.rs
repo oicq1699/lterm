@@ -738,6 +738,7 @@ pub async fn sftp_open(
     app: AppHandle,
     registry: State<'_, Mutex<SftpRegistry>>,
     store: State<'_, Mutex<crate::store::ServerStore>>,
+    secrets: State<'_, Mutex<crate::secrets::SecretStore>>,
     sid: String,
     profile_id: String,
     password: Option<String>,
@@ -758,7 +759,14 @@ pub async fn sftp_open(
         .cloned()
         .ok_or_else(|| format!("未找到服务器 {profile_id}"))?;
 
-    let mut passwords = proxy_passwords.unwrap_or_default();
+    let mut passwords = {
+        let st = store.lock().unwrap();
+        let sec = secrets.lock().unwrap();
+        sec.resolve_all(&st)
+    };
+    if let Some(pp) = proxy_passwords {
+        passwords.extend(pp);
+    }
     if let Some(pw) = password {
         passwords.insert(profile_id.clone(), pw);
     }
@@ -779,6 +787,35 @@ pub async fn sftp_open(
 
     let worker_tx = spawn_worker(app, sid.clone(), session, handle, guards);
     registry.lock().unwrap().entries.insert(sid, worker_tx);
+    Ok(())
+}
+
+/// 打开/聚焦独立的 SFTP 窗口。密码不注入窗口，前端只在 sftp_open 成功后才调用。
+#[tauri::command]
+pub fn open_sftp_window(
+    app: AppHandle,
+    sid: String,
+    profile_id: String,
+    title: String,
+) -> Result<(), String> {
+    let label = format!("sftp-{sid}");
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let script = format!(
+        "window.__LTERM_SFTP__ = {};",
+        serde_json::json!({"sid": sid, "profileId": profile_id})
+    );
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("sftp".into()))
+        .title(title)
+        .inner_size(1000.0, 720.0)
+        .min_inner_size(640.0, 420.0)
+        .initialization_script(script)
+        .build()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

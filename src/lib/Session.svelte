@@ -32,6 +32,12 @@
     prefBright: number;
     /** SFTP 路径框历史目录条数 */
     prefSftpHist: number;
+    /** SFTP 打开方式：embedded=内嵌面板 | window=独立窗口 */
+    prefSftpWindow?: string;
+    /** 会话对应的服务器名称，用于独立窗口标题 */
+    profileName?: string;
+    /** 本次连接已收集的口令（按跳 id），打开独立窗口的 SFTP 时复用 */
+    sessionPasswords?: Record<string, string>;
     /** SFTP 面板删除前是否弹确认 */
     prefConfirmSftpDelete?: boolean;
     /** SFTP 传输遇到同名文件时是否弹确认 */
@@ -52,6 +58,7 @@
   let {
     sessionId, profileId, sessionPassword, fontFamily, active, fontSize, prefPalette,
     prefBright, prefSftpHist,
+    prefSftpWindow = 'embedded', profileName = '', sessionPasswords = {},
     prefConfirmSftpDelete = true, prefConfirmSftpOverwrite = false,
     prefCopyOnSelect, prefConfirmMultiLine,
     prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
@@ -65,6 +72,17 @@
   let termHost: HTMLDivElement | undefined = $state();
   let showSearch = $state(false);
   let showSftp = $state(false);
+  let sftpOpening = $state(false);
+
+  async function openSftpWindow() {
+    if (sftpOpening) return;
+    sftpOpening = true;
+    try {
+      await invoke('sftp_open', { sid: sessionId, profileId, password: sessionPassword, proxyPasswords: sessionPasswords });
+      await invoke('open_sftp_window', { sid: sessionId, profileId, title: `SFTP · ${profileName || profileId}` });
+    } catch (e) { alert(String(e)); }
+    finally { sftpOpening = false; }
+  }
   let sftpW = $state(580);
   // 详情列（权限/所有者）随面板实际宽度出现，拖拽和「详情」按钮不会互相矛盾
   const sftpWide = $derived(sftpW >= 900);
@@ -452,7 +470,7 @@
     {/if}
     <div class="term" bind:this={termHost}></div>
   </div>
-  {#if showSftp}
+  {#if showSftp && prefSftpWindow !== 'window'}
     <div class="sftp-side" style:width={`${sftpW}px`}>
       <button
         class="sftp-grip"
@@ -502,7 +520,10 @@
     </div>
   {/if}
   <div class="tools-rail">
-    <button class="ptool" class:open={showSftp} onmousedown={noFocus} onclick={() => showSftp = !showSftp} title="文件传输面板">📁</button>
+    <button class="ptool" class:open={showSftp && prefSftpWindow !== 'window'} onmousedown={noFocus}
+            onclick={() => { if (prefSftpWindow === 'window') void openSftpWindow(); else showSftp = !showSftp; }}
+            disabled={sftpOpening}
+            title={prefSftpWindow === 'window' ? 'SFTP 独立窗口' : '文件传输面板'}>📁</button>
     <button class="ptool" class:open={showFwd} onmousedown={noFocus} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
   </div>
   {#if ctx}

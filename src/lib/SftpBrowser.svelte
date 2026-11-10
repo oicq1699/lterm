@@ -10,8 +10,12 @@
     confirmDelete?: boolean;
     /** 传输遇同名文件弹确认；关掉就是静默覆盖 */
     confirmOverwrite?: boolean;
+    /** 后端已在校验通过后打开 SFTP（独立窗口场景），跳过认证 */
+    preAuthenticated?: boolean;
   };
-  let { sid, profileId, password, wide = false, histMax = 8, confirmDelete = true, confirmOverwrite = false }: Props = $props();
+  let { sid, profileId, password, wide = false, histMax = 8, confirmDelete = true, confirmOverwrite = false, preAuthenticated = false }: Props = $props();
+
+  const instanceTag = crypto.randomUUID();
 
   type Entry = {
     name: string; path: string; size: number; is_dir: boolean; modified: number;
@@ -100,11 +104,13 @@
 
   async function ensureOpen() {
     if (ready) return;
+    if (preAuthenticated) { ready = true; return; }
     const chain = await invoke<ChainHop[]>('get_proxy_chain', { profileId });
     const pwMap: Record<string, string> = {};
     if (password) pwMap[profileId] = password;
     for (const h of chain) {
       if (h.id === profileId && password) continue;
+      if (h.has_saved_secret) continue;
       const label = hopPromptLabel(h);
       if (!label) continue;
       const pw = prompt(label);
@@ -372,8 +378,8 @@
     }
   }
 
-  function newTransfer(id: string, dir: 'up' | 'down'): Transfer {
-    const t: Transfer = { id, label: base(id), dir, done: 0, total: 0, state: 'run', fromLocal: localPath, fromRemote: remotePath };
+  function newTransfer(id: string, path: string, dir: 'up' | 'down'): Transfer {
+    const t: Transfer = { id, label: base(path), dir, done: 0, total: 0, state: 'run', fromLocal: localPath, fromRemote: remotePath };
     transfers = [...transfers.filter((x) => x.id !== id), t];
     return t;
   }
@@ -394,9 +400,10 @@
     try { await ensureOpen(); } catch (e) { error = String(e); return; }
     for (const en of items) {
       const target = joinPosix(remotePath, en.name);
-      newTransfer(target, 'up');
-      invoke('sftp_transfer', { req: { sid, transfer_id: target, from: en.path, to: target }, download: false })
-        .catch((e) => { const t = transfers.find((x) => x.id === target); if (t) { t.state = 'err'; t.error = String(e); } });
+      const id = `${instanceTag}:${target}`;
+      newTransfer(id, target, 'up');
+      invoke('sftp_transfer', { req: { sid, transfer_id: id, from: en.path, to: target }, download: false })
+        .catch((e) => { const t = transfers.find((x) => x.id === id); if (t) { t.state = 'err'; t.error = String(e); } });
     }
   }
 
@@ -407,9 +414,10 @@
     try { await ensureOpen(); } catch (e) { error = String(e); return; }
     for (const en of items) {
       const target = joinLocal(localPath, en.name);
-      newTransfer(target, 'down');
-      invoke('sftp_transfer', { req: { sid, transfer_id: target, from: en.path, to: target }, download: true })
-        .catch((e) => { const t = transfers.find((x) => x.id === target); if (t) { t.state = 'err'; t.error = String(e); } });
+      const id = `${instanceTag}:${target}`;
+      newTransfer(id, target, 'down');
+      invoke('sftp_transfer', { req: { sid, transfer_id: id, from: en.path, to: target }, download: true })
+        .catch((e) => { const t = transfers.find((x) => x.id === id); if (t) { t.state = 'err'; t.error = String(e); } });
     }
   }
 
@@ -487,10 +495,11 @@
       for (const path of ev.payload.paths) {
         const name = base(path);
         const target = joinPosix(remotePath, name);
-        newTransfer(target, 'up');
+        const id = `${instanceTag}:${target}`;
+        newTransfer(id, target, 'up');
         ensureOpen()
-          .then(() => invoke('sftp_transfer', { req: { sid, transfer_id: target, from: path, to: target }, download: false }))
-          .catch((e) => { const t = transfers.find((x) => x.id === target); if (t) { t.state = 'err'; t.error = String(e); } });
+          .then(() => invoke('sftp_transfer', { req: { sid, transfer_id: id, from: path, to: target }, download: false }))
+          .catch((e) => { const t = transfers.find((x) => x.id === id); if (t) { t.state = 'err'; t.error = String(e); } });
       }
     }
   }).then((u) => unlisten.push(u));
