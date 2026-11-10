@@ -201,6 +201,11 @@ pub fn run() {
             rdp::open_rdp,
             secrets::list_saved_password_ids,
             secrets::set_server_secret,
+            secrets::vault_status,
+            secrets::vault_unlock,
+            secrets::vault_enable,
+            secrets::vault_change,
+            secrets::vault_disable,
             toggle_devtools,
         ])
         .run(tauri::generate_context!())

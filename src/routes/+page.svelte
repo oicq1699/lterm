@@ -84,6 +84,12 @@
   let showSettings = $state(false);
   let showAside = $state(true);
   let settingsLoaded = $state(false);
+  type VaultStatus = { enabled: boolean; unlocked: boolean };
+  let vaultEnabled = $state(false);
+  let locked = $state(false);
+  let lockPw = $state('');
+  let lockErr = $state('');
+  let lockBusy = $state(false);
   let collapsedFolders = $state<string[]>([]);
   let prefCtrlEnter = $state('newline');
   let prefPalette = $state('tango');
@@ -239,6 +245,62 @@
     p.resolve(ok ? p.value : null);
   }
   function focusEl(el: HTMLInputElement) { el.focus(); }
+
+  async function unlockVault() {
+    if (lockBusy) return;
+    lockBusy = true;
+    lockErr = '';
+    try {
+      await invoke('vault_unlock', { password: lockPw });
+      lockPw = '';
+      locked = false;
+      await refresh();
+    } catch (e) {
+      lockErr = String(e);
+    } finally {
+      lockBusy = false;
+    }
+  }
+
+  async function enableVault() {
+    const p1 = await askPassword('设置启动密码（至少 6 位）。忘记后无法恢复已保存的密码。');
+    if (p1 === null) return;
+    if (Array.from(p1).length < 6) { error = '启动密码至少 6 位'; return; }
+    const p2 = await askPassword('再次输入启动密码');
+    if (p2 === null) return;
+    if (p1 !== p2) { error = '两次输入的启动密码不一致'; return; }
+    try {
+      await invoke('vault_enable', { password: p1 });
+      vaultEnabled = true;
+      alert('启动密码已启用，下次打开 lterm 需要登录。');
+    } catch (e) { error = String(e); }
+  }
+
+  async function changeVaultPw() {
+    const old = await askPassword('输入当前启动密码');
+    if (old === null) return;
+    const p1 = await askPassword('输入新的启动密码（至少 6 位）');
+    if (p1 === null) return;
+    if (Array.from(p1).length < 6) { error = '启动密码至少 6 位'; return; }
+    const p2 = await askPassword('再次输入新的启动密码');
+    if (p2 === null) return;
+    if (p1 !== p2) { error = '两次输入的启动密码不一致'; return; }
+    try {
+      await invoke('vault_change', { oldPassword: old, newPassword: p1 });
+      alert('启动密码已修改。');
+    } catch (e) { error = String(e); }
+  }
+
+  async function disableVault() {
+    if (!confirm('关闭启动密码后，已保存的密码会以明文写回 data/secrets.json。确定关闭？')) return;
+    const p = await askPassword('输入当前启动密码');
+    if (p === null) return;
+    try {
+      await invoke('vault_disable', { password: p });
+      vaultEnabled = false;
+      alert('已关闭启动密码，保存的密码现以明文存放。');
+    } catch (e) { error = String(e); }
+  }
 
   let savedPwIds = $state<Set<string>>(new Set());
 
@@ -630,6 +692,7 @@
   }
 
   function onWindowKeydown(e: KeyboardEvent) {
+    if (locked) return;
     if (e.key === 'Escape' && showSettings && !showForm && !pwPrompt) {
       closeSettings();
       return;
@@ -681,6 +744,11 @@
     window.addEventListener('lterm-zoom', onZoom);
     window.addEventListener('keydown', onWindowKeydown);
     window.addEventListener('focusin', onFocusIn);
+    try {
+      const v = await invoke<VaultStatus>('vault_status');
+      vaultEnabled = v.enabled;
+      locked = v.enabled && !v.unlocked;
+    } catch { /* 旧版本没有启动密码 */ }
     try {
       let s = await invoke<Settings>('get_settings');
       if (!localStorage.getItem('lterm-settings-migrated')) {
@@ -1090,6 +1158,20 @@
         </div>
         <div class="hint">右键 SFTP 文件「编辑（文本）」会用此程序打开临时文件，保存后约 1-2 秒自动同步回远端。支持 <code>{'{file}'}</code> 占位符（留空则用系统默认程序），例如 <code>code --wait {'{file}'}</code>、<code>gedit {'{file}'}</code>。同步由应用轮询完成，不依赖编辑器是否阻塞。</div>
 
+        <div class="sec">安全</div>
+        <div class="srow">
+          <span class="lbl">启动密码</span>
+          {#if vaultEnabled}
+            <span class="unit">已启用 · 启动时需登录</span>
+            <button onclick={changeVaultPw}>修改</button>
+            <button onclick={disableVault}>关闭</button>
+          {:else}
+            <span class="unit">未启用 · 保存的密码为明文</span>
+            <button onclick={enableVault}>启用</button>
+          {/if}
+        </div>
+        <div class="hint">启用后，服务器密码用启动密码经 Argon2id 派生出的密钥加密存放（AES-256-GCM），启动密码本身不落盘；每次打开 lterm 都要输入一次。忘记启动密码将无法恢复已保存的密码。</div>
+
         <div class="sec">键盘</div>
         <div class="srow">
           <span class="lbl">Ctrl+Enter</span>
@@ -1343,6 +1425,19 @@
   {/if}
 </main>
 
+{#if locked}
+  <div class="lockmask">
+    <form class="lockbox" onsubmit={(e) => { e.preventDefault(); void unlockVault(); }}>
+      <h2>lterm 已锁定</h2>
+      <p>输入启动密码，解锁本机保存的服务器密码</p>
+      <input type="password" bind:value={lockPw} use:focusEl aria-label="启动密码"
+             onkeydown={(e) => { if (e.key === 'Escape') e.preventDefault(); }} />
+      {#if lockErr}<p class="lockerr">{lockErr}</p>{/if}
+      <button type="submit" disabled={lockBusy || !lockPw}>{lockBusy ? '解锁中…' : '解锁'}</button>
+    </form>
+  </div>
+{/if}
+
 <style>
   main { display: flex; height: 100vh; font-family: system-ui, sans-serif; }
   .rail { flex-shrink: 0; width: 30px; z-index: 40; border: none; border-right: 1px solid #3a3a3a; background: #202020; color: #8ab4f8; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; padding: 0; }
@@ -1512,6 +1607,14 @@
   .pwbox input { padding: 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .pwbox .row { display: flex; gap: 6px; justify-content: flex-end; }
   .pwbox button { padding: 5px 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; cursor: pointer; }
+  .lockmask { position: fixed; inset: 0; z-index: 200; background: #1a1a1a; display: flex; align-items: center; justify-content: center; }
+  .lockbox { width: 360px; background: #252525; border: 1px solid #444; border-radius: 10px; padding: 20px; color: #ddd; display: flex; flex-direction: column; gap: 12px; }
+  .lockbox h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .lockbox p { margin: 0; font-size: 12px; color: #999; }
+  .lockbox input { padding: 8px; border-radius: 6px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
+  .lockbox button { padding: 8px; border-radius: 6px; border: 1px solid #3a6ea5; background: #2d4a6a; color: #eaf2ff; cursor: pointer; }
+  .lockbox button:disabled { opacity: .5; cursor: default; }
+  .lockerr { color: #e06c6c !important; }
   .focuswarn { color: #e6a23c; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .connecting { color: #e6a23c; font-size: 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .spin { flex-shrink: 0; width: 10px; height: 10px; border-radius: 50%; border: 2px solid #e6a23c55; border-top-color: #e6a23c;
