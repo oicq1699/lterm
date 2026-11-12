@@ -4,6 +4,8 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { openUrl } from '@tauri-apps/plugin-opener';
+  import { check as checkAutoUpdate } from '@tauri-apps/plugin-updater';
+  import { relaunch } from '@tauri-apps/plugin-process';
   import Session from '$lib/Session.svelte';
   import Icon from '$lib/Icon.svelte';
   import { ICON_NAMES, normalizeIcon, iconPaths } from '$lib/icons';
@@ -129,11 +131,26 @@
 
   // ---- 新版本检测：请求由界面发（走系统 TLS，省一套 HTTPS 依赖），解析与版本比较在后端 ----
   type Release = { version: string; url: string; notes: string };
+  // 安装形态由后端探测：便携版没有可替换的安装包，自动更新只能走手动下载
+  type InstallKind = 'portable' | 'nsis' | 'appimage' | 'msi' | 'other' | '';
+  const PORTABLE_UPDATE_HINT = '便携版请手动下载安装包，安装一次后可自动更新';
   let currentVersion = $state('');
   let update = $state<Release | null>(null);
   let updateDismissed = $state(false);
   let updateChecking = $state(false);
   let updateMsg = $state('');
+  let installKind = $state<InstallKind>('');
+  let updateOpen = $state(false);
+  let autoUpdating = $state(false);
+  let autoProgress = $state(0);
+  let autoMsg = $state('');
+
+  function normInstallKind(k: string): InstallKind {
+    switch (k) {
+      case 'portable': case 'nsis': case 'appimage': case 'msi': case 'other': return k;
+      default: return '';
+    }
+  }
 
   async function checkForUpdate(manual = false) {
     if (updateChecking) return;
@@ -158,7 +175,13 @@
       if (rel && rel.version !== skipUpdate) {
         update = rel;
         updateDismissed = false;
-        if (manual) updateMsg = `发现新版本 v${rel.version}（当前 v${feed.current}）`;
+        autoMsg = '';
+        autoProgress = 0;
+        // 启动时的静默检查只出提示条；手动检查有结果才直接展开选择窗口
+        if (manual) {
+          updateMsg = `发现新版本 v${rel.version}（当前 v${feed.current}）`;
+          updateOpen = true;
+        }
       } else if (manual) {
         updateMsg = rel ? `v${rel.version} 被你忽略过，点「恢复提醒」会再问` : `已是最新版本 v${feed.current}`;
       }
@@ -175,10 +198,64 @@
     void openUrl(update.url).catch(() => { updateMsg = '打开发布页失败，请到 GitHub 的 Releases 页面手动下载'; });
   }
 
+  function openUpdateDialog() {
+    if (autoUpdating) return;
+    autoMsg = '';
+    autoProgress = 0;
+    updateOpen = true;
+  }
+
+  // 自动更新只负责下载安装；检测与说明仍以 GitHub API 的结果为准
+  async function autoUpdate() {
+    if (autoUpdating) return;
+    if (installKind === 'portable') { autoMsg = PORTABLE_UPDATE_HINT; return; }
+    autoUpdating = true;
+    autoProgress = 0;
+    autoMsg = '正在准备自动更新…';
+    try {
+      const au = await checkAutoUpdate();
+      if (!au) {
+        autoMsg = '没有可用的自动更新包，请手动下载';
+        return;
+      }
+      let total = 0;
+      let received = 0;
+      await au.downloadAndInstall((ev) => {
+        if (ev.event === 'Started') {
+          total = ev.data.contentLength ?? 0;
+          autoProgress = 0;
+          autoMsg = total > 0 ? `正在下载安装包… 0%（共 ${(total / 1048576).toFixed(1)} MB）` : '正在下载安装包…';
+        } else if (ev.event === 'Progress') {
+          received += ev.data.chunkLength;
+          if (total > 0) {
+            autoProgress = Math.min(1, received / total);
+            autoMsg = `正在下载安装包… ${Math.round(autoProgress * 100)}%`;
+          } else {
+            autoMsg = `正在下载安装包… ${(received / 1048576).toFixed(1)} MB`;
+          }
+        } else {
+          autoProgress = 1;
+          autoMsg = installKind === 'appimage' ? '安装完成，正在重启…' : '安装程序已启动，应用即将退出…';
+        }
+      });
+      if (installKind === 'appimage') {
+        await relaunch();
+      } else {
+        // Windows 下 downloadAndInstall 会直接退出进程，下面这句通常来不及显示
+        autoMsg = '安装程序已启动，应用即将退出；若未退出请手动关闭后重新打开';
+      }
+    } catch (e) {
+      autoMsg = `自动更新失败：${e instanceof Error ? e.message : String(e)}。请点「手动下载」到发布页下载安装包。`;
+    } finally {
+      autoUpdating = false;
+    }
+  }
+
   function skipThisVersion() {
     if (!update) return;
     skipUpdate = update.version;
     update = null;
+    updateOpen = false;
     saveSettingsSoon();
   }
 
@@ -790,6 +867,10 @@
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
     void invoke<{ current: string }>('update_feed').then((f) => { currentVersion = f.current; }).catch(() => {});
+    // 安装形态取不到时按未知处理：页面照常用，只是自动更新会走运行时错误兜底
+    try {
+      installKind = normInstallKind(await invoke<string>('install_kind'));
+    } catch { installKind = ''; }
     // 晚一点再问：别和恢复窗口、首屏渲染抢那点带宽，也别在用户还在挑服务器时就弹框
     if (prefCheckUpdate) setTimeout(() => void checkForUpdate(), 1500);
     unlistenAll.push(await listen<{ host: string; port: number; fingerprint: string }>('hostkey-new', (ev) => {
@@ -1077,10 +1158,42 @@
     {#if update && !updateDismissed}
       <div class="updatetoast" role="status">
         <span class="uttitle">发现新版本 v{update.version}</span>
-        <span class="utsub">当前 v{currentVersion || '…'}，去发布页看更新说明并下载</span>
-        <button class="utact" onclick={openReleasePage}>查看更新</button>
+        <span class="utsub">当前 v{currentVersion || '…'}，可手动下载或自动更新</span>
+        <button class="utact" onclick={openUpdateDialog}>查看更新</button>
         <button class="utact" onclick={skipThisVersion} title="这个版本不再提醒，出了更新的版本会再问">忽略此版本</button>
         <button class="dismiss" onclick={() => updateDismissed = true} title="这次先不，下次启动再提醒">✕</button>
+      </div>
+    {/if}
+    {#if updateOpen && update}
+      <div class="setmask updmask" role="presentation" onclick={() => updateOpen = false}>
+        <div class="setdlg upddlg" role="dialog" aria-modal="true" aria-label="发现新版本" tabindex={-1}
+             onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.key === 'Escape' && (updateOpen = false)}>
+          <div class="shead">
+            <span>发现新版本 v{update.version}</span>
+            <button class="sclose" onmousedown={noFocus} onclick={() => updateOpen = false} aria-label="关闭更新窗口">✕</button>
+          </div>
+          <div class="updmeta">当前 v{currentVersion || '…'} · 最新 v{update.version}</div>
+          {#if installKind === 'portable'}
+            <div class="updhint">{PORTABLE_UPDATE_HINT}</div>
+          {/if}
+          <pre class="updnotes">{update.notes || '（此版本没有更新说明）'}</pre>
+          {#if autoMsg}<div class="supd">{autoMsg}</div>{/if}
+          {#if autoUpdating || autoProgress > 0}
+            <div class="updbar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                 aria-valuenow={Math.round(autoProgress * 100)} aria-label="自动更新进度">
+              <span style={`width: ${Math.round(autoProgress * 100)}%`}></span>
+            </div>
+          {/if}
+          <div class="updacts">
+            <button disabled={autoUpdating} onclick={openReleasePage}>手动下载</button>
+            <button disabled={autoUpdating || installKind === 'portable'}
+                    title={installKind === 'portable' ? PORTABLE_UPDATE_HINT : '下载安装包并自动安装'}
+                    onclick={autoUpdate}>{autoUpdating ? '更新中…' : '自动更新'}</button>
+            <span class="spacer"></span>
+            <button disabled={autoUpdating} onclick={skipThisVersion}>忽略此版本</button>
+            <button disabled={autoUpdating} onclick={() => updateOpen = false}>稍后</button>
+          </div>
+        </div>
       </div>
     {/if}
   </section>
@@ -1556,6 +1669,17 @@
   .updatetoast .utsub { color: #9fc4e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .updatetoast .utact { padding: 2px 8px; white-space: nowrap; }
   .updatetoast .dismiss { color: #cfe4ff; }
+  .setdlg.upddlg { width: 560px; }
+  .setdlg .updmeta { font-size: 12px; color: #9fc4e8; }
+  .setdlg .updhint { padding: 6px 8px; font-size: 12px; color: #e6c07b; background: #3a2f1b; border: 1px solid #5c4a26; border-radius: 6px; }
+  .setdlg .updnotes { margin: 0; max-height: 220px; overflow-y: auto; padding: 8px 10px; background: #1b1b1b; border: 1px solid #383838; border-radius: 6px;
+    color: #bbb; font-family: inherit; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .setdlg .updbar { height: 6px; overflow: hidden; background: #1b1b1b; border: 1px solid #383838; border-radius: 3px; }
+  .setdlg .updbar span { display: block; height: 100%; background: linear-gradient(90deg, #2f6ea5, #4fd6be); }
+  .setdlg .updacts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .setdlg .updacts .spacer { flex: 1; }
+  .setdlg .updacts button:disabled { opacity: .5; cursor: default; }
+  .setmask.updmask { z-index: 57; }
   .setdlg .supd { font-size: 12px; color: #9fc4e8; margin: 2px 0 4px; }
   .dismiss { background: none; border: none; color: #f0a0a0; cursor: pointer; flex-shrink: 0; }
   .status { padding: 4px 10px; font-size: 12px; color: #999; border-top: 1px solid #333; display: flex; gap: 10px; align-items: center; position: relative; }
