@@ -1,6 +1,7 @@
-name: build-portable
+name: build-release
 
-# 推送 v* 标签（如 v0.1.0）或手动触发时，自动构建 Windows x64 / Linux x64 便携版
+# 推送 v* 标签（如 v0.5.11）或手动触发时，构建 Windows NSIS 安装器与 Linux AppImage；
+# 打标签时再由单独的 release 任务统一生成 latest.json 并上传一次，避免矩阵任务重复发版。
 on:
   push:
     tags: ['v*']
@@ -14,7 +15,11 @@ jobs:
     strategy:
       fail-fast: false   # 一个平台失败不牵连另一个
       matrix:
-        os: [windows-latest, ubuntu-22.04]
+        include:
+          - os: windows-latest
+            bundles: nsis
+          - os: ubuntu-22.04
+            bundles: appimage
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +33,7 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt update
-          sudo apt install -y libwebkit2gtk-4.1-dev librsvg2-dev build-essential curl wget file libssl-dev libxdo-dev libayatana-appindicator3-dev
+          sudo apt install -y libwebkit2gtk-4.1-dev librsvg2-dev build-essential curl wget file libssl-dev libxdo-dev libayatana-appindicator3-dev libfuse2 patchelf
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -41,20 +46,25 @@ jobs:
         run: npm ci
 
       # 必须走 tauri CLI：裸 cargo build 不会设置生产标记，产物会按 dev 模式去连 localhost:1420 而白屏
-      - name: Build portable binary (tauri CLI, no bundler)
-        run: npx tauri build --no-bundle
+      - name: Build bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --bundles ${{ matrix.bundles }}
 
-      - name: Package portable
+      # 打包器每构建一种安装包都会还原未打补丁的主程序，因此这里的 lterm.exe 是便携版，
+      # install_kind() 会返回 portable；unix 侧只收 AppImage 及其签名。
+      - name: Collect artifacts
         shell: bash
         run: |
-          mkdir -p out pkg
+          mkdir -p out
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp src-tauri/target/release/lterm.exe out/lterm.exe
+            cp src-tauri/target/release/bundle/nsis/*.exe out/
+            cp src-tauri/target/release/bundle/nsis/*.exe.sig out/
           else
-            cp src-tauri/target/release/lterm pkg/lterm
-            cp src-tauri/icons/icon.png pkg/icon.png
-            cp scripts/linux/install-icon.sh pkg/install-icon.sh
-            tar -czf out/lterm-linux-x64-portable.tar.gz -C pkg lterm icon.png install-icon.sh
+            cp src-tauri/target/release/bundle/appimage/*.AppImage out/
+            cp src-tauri/target/release/bundle/appimage/*.AppImage.sig out/
           fi
 
       - uses: actions/upload-artifact@v4
@@ -62,24 +72,26 @@ jobs:
           name: lterm-${{ matrix.os }}
           path: out/
 
-      # 打标签触发的构建，把便携版挂到该 tag 的 Release 上
-      # files 只列本平台那一个：两个平台都列上，另一个 runner 上必然找不到文件，
-      # 而 fail_on_unmatched_files=true 会把「找不到」直接判失败，Release 就建不出来了
-      # 说明只让 Linux 任务生成：两个矩阵任务都开会把生成的 changelog 追加两次。
-      - name: Upload to Release (Windows)
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'windows-latest'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: out/lterm.exe
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Upload to Release (Linux)
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-22.04'
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: lterm-*
+          merge-multiple: true
+
+      - name: Generate latest.json
+        run: node scripts/make-latest-json.mjs "${GITHUB_REF_NAME#v}" "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" release
+
+      - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          files: out/lterm-linux-x64-portable.tar.gz
+          files: release/*
           fail_on_unmatched_files: true
           generate_release_notes: true
         env:

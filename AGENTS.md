@@ -3,8 +3,9 @@
 ## 本地构建
 
 - **每次改完代码，本地只构建 Linux 便携二进制**：`npm run tauri build -- --no-bundle`，产物就留在 `src-tauri/target/release/lterm`，不要另存副本、不要改名。
-- 不在本地打 Windows 包、不生成任何安装包（deb/rpm/AppImage/msi）；Windows 产物一律交给 GitHub Actions。
-- 产物文件名一律用 `lterm`（Linux）/ `lterm.exe`（Windows），不加 `-linux-x64-portable` 之类后缀；区分平台的只有 Linux 的 `.tar.gz` 包名。
+- 本地不打 Windows 包、不生成任何安装包；安装包统一交给 GitHub Actions：CI 构建 **Windows NSIS 安装器 + Linux AppImage**（自更新用），不再产出 MSI/deb/rpm。
+- Windows 便携 `lterm.exe` 暂时保留作为过渡产物，与 NSIS 安装版一起发布。
+- 产物文件名一律用 `lterm`（Linux）/ `lterm.exe`（Windows）；区分平台的只有安装包自身的后缀。
 
 ## 提交
 
