@@ -1,6 +1,6 @@
 name: build-release
 
-# 推送 v* 标签（如 v0.5.11）或手动触发时，构建 Windows NSIS 安装器与 Linux AppImage；
+# 推送 v* 标签（如 v0.6.0）或手动触发时，构建 Windows NSIS 安装器与 Linux AppImage；
 # 打标签时再由单独的 release 任务统一生成 latest.json 并上传一次，避免矩阵任务重复发版。
 on:
   push:
