@@ -791,8 +791,11 @@ pub async fn sftp_open(
 }
 
 /// 打开/聚焦独立的 SFTP 窗口。密码不注入窗口，前端只在 sftp_open 成功后才调用。
+///
+/// 必须是 async 命令：Windows 上在同步命令/事件回调里调用 `WebviewWindowBuilder::build()`
+/// 会死锁（wry #583），表现为窗口弹出但空白、关不掉、整个应用卡死只能强杀。
 #[tauri::command]
-pub fn open_sftp_window(
+pub async fn open_sftp_window(
     app: AppHandle,
     sid: String,
     profile_id: String,
