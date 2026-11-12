@@ -1186,7 +1186,7 @@
         <div class="sec">更新</div>
         <div class="srow">
           <span class="lbl">当前版本</span>
-          <span class="num">v{currentVersion || '…'}</span>
+          <span class="num ver">v{currentVersion || '…'}</span>
           <button disabled={updateChecking} onclick={() => checkForUpdate(true)}>{updateChecking ? '检查中…' : '立即检查'}</button>
           {#if skipUpdate}
             <button onclick={unskipVersion}>恢复提醒（已忽略 v{skipUpdate}）</button>
@@ -1600,6 +1600,7 @@
   .srow .ctlsel { flex: 1; min-width: 0; max-width: 100%; padding: 3px 4px; font-size: 12px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .srow .ctlsel option { background: #2a2a2a; color: #eee; }
   .srow .num { width: 26px; text-align: center; }
+  .srow .num.ver { width: auto; text-align: left; }
   .srow .fontin { flex: 1; min-width: 100px; padding: 4px 6px; border-radius: 5px; border: 1px solid #444; background: #2a2a2a; color: #eee; }
   .pwmask { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
   .pwbox { background: #252525; border: 1px solid #444; border-radius: 8px; padding: 14px 16px; width: 340px; color: #ccc; display: flex; flex-direction: column; gap: 10px; }
