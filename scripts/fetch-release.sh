@@ -7,7 +7,7 @@
 # 用法:
 #   ./fetch-release.sh            正常检查并按需下载
 #   ./fetch-release.sh --dry-run  只列出将要下载的内容，不实际下载
-#   ./fetch-release.sh --force    忽略版本记录，强制重新下载最新版本
+#   ./fetch-release.sh --force    忽略版本记录，重新检查最新版并补齐缺失文件（已存在且大小一致的仍跳过）
 #
 # 环境变量:
 #   REPO                        仓库，默认 oicq1699/lterm
@@ -17,8 +17,8 @@
 # 建议 cron 定时执行，例如每天 8 点:
 #   0 8 * * * cd /srv/lterm-mirror && ./fetch-release.sh >> fetch.log 2>&1
 #
-# 下载失败时不会写 last_version；重新运行会对已完成的文件跳过、
-# 对中断的文件用 .part 断点续传。
+# 下载失败时不会写 last_version；重新运行会跳过已完成文件、
+# 用 .part 断点续传中断的文件，并对已存在但大小与发布不符的文件重新下载。
 
 set -euo pipefail
 
@@ -28,7 +28,7 @@ DRY_RUN=0
 FORCE=0
 
 usage() {
-  sed -n '2,23p' "$0"
+  sed -n '2,21p' "$0"
 }
 
 for arg in "$@"; do
@@ -61,17 +61,26 @@ json=$(curl -fsSL --connect-timeout 15 --retry 3 --retry-delay 5 "${header[@]}" 
 
 if command -v jq >/dev/null 2>&1; then
   tag=$(printf '%s' "$json" | jq -r '.tag_name')
-  urls=$(printf '%s' "$json" | jq -r '.assets[].browser_download_url')
+  entries=$(printf '%s' "$json" | jq -r '.assets[] | [.size, .browser_download_url] | @tsv')
 else
   tag=$(printf '%s\n' "$json" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
-  urls=$(printf '%s\n' "$json" | sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p')
+  # 无 jq：python3 按 JSON 语义逐行输出 size<TAB>url；没有 python3 时退回 sed（跳过大小校验）
+  if command -v python3 >/dev/null 2>&1; then
+    entries=$(printf '%s' "$json" | python3 -c "import json,sys
+for a in json.load(sys.stdin).get('assets', []):
+    print(a['size'], a['browser_download_url'], sep='\t')")
+  else
+    sizes=$(printf '%s\n' "$json" | sed -n 's/.*"size":[[:space:]]*\([0-9]\+\).*/\1/p')
+    urls=$(printf '%s\n' "$json" | sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p')
+    entries=$(paste <(printf '%s\n' "$sizes") <(printf '%s\n' "$urls"))
+  fi
 fi
 
 [ -n "$tag" ] || {
   echo "无法从 API 返回中解析 tag_name" >&2
   exit 1
 }
-[ -n "$urls" ] || {
+[ -n "$entries" ] || {
   echo "$tag 没有任何发布产物" >&2
   exit 1
 }
@@ -89,9 +98,9 @@ echo "发现新版本: ${current:-无本地记录} -> $tag"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "（--dry-run）将在 ./$version/ 下载以下产物："
-  printf '%s\n' "$urls" | while IFS= read -r u; do
+  while IFS=$'\t' read -r _ u; do
     [ -n "$u" ] && echo "  ${u##*/}"
-  done
+  done <<<"$entries"
   exit 0
 fi
 
@@ -109,14 +118,26 @@ dl() {
   mv -f "$tmp" "$2"
 }
 
+is_num() { case "$1" in ('' | *[!0-9]*) return 1 ;; (*) return 0 ;; esac; }
+file_size() { stat -c%s "$1" 2>/dev/null || wc -c <"$1"; }
+
 failed=0
-while IFS= read -r u; do
+while IFS=$'\t' read -r size u; do
   [ -n "$u" ] || continue
   name="${u##*/}"
   dest="$version/$name"
   if [ -f "$dest" ]; then
-    echo "跳过（已存在）: $dest"
-    continue
+    if is_num "$size" && [ "$(file_size "$dest")" != "$size" ]; then
+      echo "本地大小与发布不符，重新下载: $name"
+      rm -f "$dest" "$dest.part"
+    else
+      echo "跳过（已存在且大小一致）: $dest"
+      continue
+    fi
+  elif [ -f "$dest.part" ] && is_num "$size" &&
+    [ "$(file_size "$dest.part")" -gt "$size" ]; then
+    # 中断残留比发布体积还大说明是脏数据，续传只会拼出坏文件
+    rm -f "$dest.part"
   fi
   echo "下载: $name"
   if dl "$u" "$dest"; then
@@ -125,7 +146,7 @@ while IFS= read -r u; do
     echo "  下载失败: $name" >&2
     failed=1
   fi
-done <<<"$urls"
+done <<<"$entries"
 
 if [ "$failed" -ne 0 ]; then
   echo "存在失败的文件，不更新 $STATE_FILE；重新运行可续传/重试" >&2
