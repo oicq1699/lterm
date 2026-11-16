@@ -1,9 +1,10 @@
 //! 新版本检测。网络请求由界面发起（webview 的 fetch 走系统 TLS，免引第三方 HTTPS 栈），
 //! 这里只负责给出请求地址、解析响应、比较版本号 —— 逻辑留在后端才好在 CI 里跑单测。
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-/// GitHub 上本仓库的最新正式版
-pub const FEED_URL: &str = "https://api.github.com/repos/oicq1699/lterm/releases/latest";
+/// 自建更新服务器上的最新正式版清单（镜像 GitHub Release，国内可直接访问）
+pub const FEED_URL: &str = "https://www.linyong.tech/download/lterm/latest.json";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -22,16 +23,47 @@ pub struct Feed {
 }
 
 #[derive(Deserialize)]
+struct RawPlatform {
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Deserialize)]
 struct RawRelease {
-    tag_name: String,
+    version: String,
     #[serde(default)]
-    html_url: String,
+    notes: Option<String>,
     #[serde(default)]
-    body: Option<String>,
-    #[serde(default)]
-    draft: bool,
-    #[serde(default)]
-    prerelease: bool,
+    platforms: HashMap<String, RawPlatform>,
+}
+
+/// 按运行平台从清单挑一个安装包地址；Windows 优先 NSIS 安装版（便携版也应转装它）。
+/// 找不到匹配键返回空串，交由界面回退到发布目录。
+fn pick_url(platforms: &HashMap<String, RawPlatform>, os: &str) -> String {
+    let keys: &[&str] = match os {
+        "windows" => &[
+            "windows-x86_64-nsis",
+            "windows-aarch64-nsis",
+            "windows-x86_64",
+            "windows",
+        ],
+        "macos" => &["darwin-aarch64", "darwin-x86_64", "darwin"],
+        "linux" => &[
+            "linux-x86_64-appimage",
+            "linux-aarch64-appimage",
+            "linux-x86_64",
+            "linux",
+        ],
+        _ => &[],
+    };
+    for k in keys {
+        if let Some(p) = platforms.get(*k) {
+            if !p.url.is_empty() {
+                return p.url.clone();
+            }
+        }
+    }
+    String::new()
 }
 
 fn strip_v(tag: &str) -> String {
@@ -69,21 +101,18 @@ pub fn is_newer(current: &str, remote: &str) -> bool {
     a_suffix && !b_suffix
 }
 
-/// 解析 `/releases/latest` 的响应体；没有可更新的正式版返回 None
-pub fn parse_release(raw: &str) -> Result<Option<Release>, String> {
+/// 解析镜像上的 `latest.json` 清单；缺版本号即报错（清单坏了宁可不提示）
+pub fn parse_release(raw: &str, os: &str) -> Result<Option<Release>, String> {
     let parsed: RawRelease =
-        serde_json::from_str(raw).map_err(|e| format!("版本信息读不懂，GitHub 接口可能改了：{e}"))?;
-    if parsed.draft || parsed.prerelease {
-        return Ok(None);
-    }
-    let version = strip_v(&parsed.tag_name);
+        serde_json::from_str(raw).map_err(|e| format!("版本信息读不懂，更新清单可能坏了：{e}"))?;
+    let version = strip_v(&parsed.version);
     if version.is_empty() {
         return Err("版本信息里没有版本号".into());
     }
     Ok(Some(Release {
+        url: pick_url(&parsed.platforms, os),
         version,
-        url: parsed.html_url,
-        notes: parsed.body.unwrap_or_default(),
+        notes: parsed.notes.unwrap_or_default(),
     }))
 }
 
@@ -113,7 +142,7 @@ pub fn update_feed() -> Feed {
 /// 界面把 fetch 到的响应体原样递进来，换回「有没有新版」
 #[tauri::command]
 pub fn update_check(body: String) -> Result<Option<Release>, String> {
-    Ok(match parse_release(&body)? {
+    Ok(match parse_release(&body, std::env::consts::OS)? {
         Some(r) if is_newer(env!("CARGO_PKG_VERSION"), &r.version) => Some(r),
         _ => None,
     })
@@ -123,9 +152,19 @@ pub fn update_check(body: String) -> Result<Option<Release>, String> {
 mod tests {
     use super::*;
 
-    fn json(tag: &str, flags: &str) -> String {
+    fn manifest(version: &str, platforms: &str, notes: &str) -> String {
         format!(
-            r#"{{"tag_name":"{tag}","html_url":"https://github.com/oicq1699/lterm/releases/tag/{tag}","body":"说明"{flags}}}"#
+            r#"{{"version":"{version}","notes":"{notes}","platforms":{{{platforms}}}}}"#
+        )
+    }
+
+    fn win() -> String {
+        manifest(
+            "0.5.6",
+            r#""windows-x86_64":{"url":"https://m/0.5.6/msi.exe"},
+               "windows-x86_64-nsis":{"url":"https://m/0.5.6/setup.exe"},
+               "linux-x86_64-appimage":{"url":"https://m/0.5.6/lterm.AppImage"}"#,
+            "说明",
         )
     }
 
@@ -147,27 +186,29 @@ mod tests {
     }
 
     #[test]
-    fn reads_a_normal_release_and_drops_the_v() {
-        let r = parse_release(&json("v0.5.6", "")).unwrap().unwrap();
+    fn reads_a_normal_manifest() {
+        let r = parse_release(&win(), "windows").unwrap().unwrap();
         assert_eq!(r.version, "0.5.6");
-        assert_eq!(
-            r.url,
-            "https://github.com/oicq1699/lterm/releases/tag/v0.5.6"
-        );
+        assert_eq!(r.url, "https://m/0.5.6/setup.exe");
         assert_eq!(r.notes, "说明");
     }
 
     #[test]
-    fn pre_releases_and_drafts_are_not_offered() {
-        let pre = json("v9.9.9", r#","draft":false,"prerelease":true"#);
-        assert_eq!(parse_release(&pre).unwrap(), None);
-        let draft = json("v9.9.9", r#","draft":true,"prerelease":false"#);
-        assert_eq!(parse_release(&draft).unwrap(), None);
+    fn picks_nsis_on_windows_and_appimage_on_linux() {
+        // Windows 优先 NSIS 安装版（便携版用户也应被引导去装它）
+        let w = parse_release(&win(), "windows").unwrap().unwrap();
+        assert!(w.url.ends_with("setup.exe"), "{}", w.url);
+        // Linux 取 AppImage
+        let l = parse_release(&win(), "linux").unwrap().unwrap();
+        assert!(l.url.ends_with("lterm.AppImage"), "{}", l.url);
+        // 未知平台没有匹配键：地址留空，由界面回退，而不是瞎给一个
+        let o = parse_release(&win(), "freebsd").unwrap().unwrap();
+        assert_eq!(o.url, "");
     }
 
     #[test]
     fn missing_fields_fall_back_instead_of_panicking() {
-        let r = parse_release(r#"{"tag_name":"v1.2.3"}"#).unwrap().unwrap();
+        let r = parse_release(r#"{"version":"1.2.3"}"#, "linux").unwrap().unwrap();
         assert_eq!(r.version, "1.2.3");
         assert_eq!(r.url, "");
         assert_eq!(r.notes, "");
@@ -176,8 +217,10 @@ mod tests {
     #[test]
     fn html_error_page_is_explained_not_swallowed() {
         // 被代理/网关拦下时常见：返回的是 HTML，不是 JSON
-        let e = parse_release("<html>502 Bad Gateway</html>").unwrap_err();
+        let e = parse_release("<html>502 Bad Gateway</html>", "linux").unwrap_err();
         assert!(e.contains("版本信息读不懂"), "{e}");
-        assert!(parse_release(r#"{"tag_name":"  "}"#).unwrap_err().contains("没有版本号"));
+        assert!(parse_release(r#"{"version":"  "}"#, "linux")
+            .unwrap_err()
+            .contains("没有版本号"));
     }
 }

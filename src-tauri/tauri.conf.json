@@ -47,7 +47,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0N0M5OTIyNTdGOEJBMEYKUldRUHV2aFhJcGw4ZE56QWZvVlNyK3p3emFObkdzL0VnOTNtRW5lY256RFppYStUSW5qaHZubEgK",
       "endpoints": [
-        "https://github.com/oicq1699/lterm/releases/latest/download/latest.json"
+        "https://www.linyong.tech/download/lterm/latest.json"
       ]
     }
   }

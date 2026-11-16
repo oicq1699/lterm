@@ -2,7 +2,8 @@
 # 在能访问 GitHub 的服务器上镜像抓取 lterm 发布产物：
 #   1. 查询 GitHub 最新 Release，与本地 last_version 记录比较；
 #   2. 有新版本则在当前目录创建 <版本号>/（如 0.6.0/）；
-#   3. 把该版本全部产物（NSIS 安装器、便携 exe、AppImage、签名、latest.json）下载进去。
+#   3. 把该版本全部产物（NSIS 安装器、便携 exe、AppImage、签名、latest.json）下载进去；
+#   4. 把清单里的 GitHub 下载地址改写为本站地址，原子刷新根 latest.json（应用的 updater 指这里）。
 #
 # 用法:
 #   ./fetch-release.sh            正常检查并按需下载
@@ -11,6 +12,7 @@
 #
 # 环境变量:
 #   REPO                        仓库，默认 oicq1699/lterm
+#   PUBLISH_BASE                本站对外地址，默认 https://www.linyong.tech/download/lterm
 #   GITHUB_TOKEN                可选，提高 API 限额（匿名 60 次/小时）
 #   LOW_SPEED_LIMIT / LOW_SPEED_TIME  低速中断阈值，默认低于 1KB/s 持续 60 秒判定失败并重试
 #
@@ -23,12 +25,13 @@
 set -euo pipefail
 
 REPO="${REPO:-oicq1699/lterm}"
+PUBLISH_BASE="${PUBLISH_BASE:-https://www.linyong.tech/download/lterm}"
 STATE_FILE="last_version"
 DRY_RUN=0
 FORCE=0
 
 usage() {
-  sed -n '2,21p' "$0"
+  sed -n '2,23p' "$0"
 }
 
 for arg in "$@"; do
@@ -89,8 +92,34 @@ version="${tag#v}"
 current=""
 [ -f "$STATE_FILE" ] && current=$(cat "$STATE_FILE")
 
+# 应用端 updater 只认固定地址的 latest.json：把 GitHub 前缀换成本站，先写临时文件再原子替换；
+# 改写后仍残留 GitHub 地址则拒绝发布，避免用户"检测到新版却从 GitHub 下载"卡死。
+publish_manifest() {
+  local src="$version/latest.json" tmp="latest.json.new"
+  local oldp="https://github.com/${REPO}/releases/download/${tag}/"
+  local newp="${PUBLISH_BASE}/${version}/"
+  if [ ! -f "$src" ]; then
+    echo "缺少 $src，无法发布根 latest.json" >&2
+    return 1
+  fi
+  sed "s|${oldp}|${newp}|g" "$src" >"$tmp"
+  if grep -qF "$oldp" "$tmp"; then
+    rm -f "$tmp"
+    echo "清单里仍有未改写的 GitHub 地址，放弃发布根 latest.json" >&2
+    return 1
+  fi
+  if [ -f latest.json ] && cmp -s "$tmp" latest.json; then
+    rm -f "$tmp"
+    echo "根清单无需变化: ./latest.json"
+  else
+    mv -f "$tmp" latest.json
+    echo "根清单已发布: ./latest.json（下载地址 → ${newp}）"
+  fi
+}
+
 if [ "$FORCE" -eq 0 ] && [ -n "$version" ] && [ "$version" = "$current" ]; then
   echo "已是最新：$tag（记录于 ./$STATE_FILE）"
+  publish_manifest || exit 1
   exit 0
 fi
 
@@ -101,6 +130,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   while IFS=$'\t' read -r _ u; do
     [ -n "$u" ] && echo "  ${u##*/}"
   done <<<"$entries"
+  echo "（--dry-run）并将刷新根 ./latest.json（下载地址 → ${PUBLISH_BASE}/${version}/）"
   exit 0
 fi
 
@@ -152,6 +182,11 @@ if [ "$failed" -ne 0 ]; then
   echo "存在失败的文件，不更新 $STATE_FILE；重新运行可续传/重试" >&2
   exit 1
 fi
+
+publish_manifest || {
+  echo "根清单发布失败，不更新 $STATE_FILE" >&2
+  exit 1
+}
 
 echo "$version" >"$STATE_FILE"
 echo "完成：$tag 已镜像到 ./$version/，版本记录已更新（./$STATE_FILE）"

@@ -163,13 +163,13 @@
       const timer = setTimeout(() => ctrl.abort(), 8000);
       let res: Response;
       try {
-        res = await fetch(feed.api, { headers: { Accept: 'application/vnd.github+json' }, signal: ctrl.signal });
+        res = await fetch(feed.api, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
       } finally {
         clearTimeout(timer);
       }
       if (!res.ok) {
-        // 匿名访问限流是这里最常见的失败，其余状态码原样报出来
-        throw new Error(res.status === 403 || res.status === 429 ? 'GitHub 接口限流，稍后再试' : `GitHub 返回 HTTP ${res.status}`);
+        // 静态清单不该有限流；异常多为站点没同步（404）或被网关拦截
+        throw new Error(res.status === 404 ? '更新服务器上还没有清单（latest.json 缺失）' : `更新服务器返回 HTTP ${res.status}`);
       }
       const rel = await invoke<Release | null>('update_check', { body: await res.text() });
       if (rel && rel.version !== skipUpdate) {
@@ -195,7 +195,7 @@
 
   function openReleasePage() {
     if (!update?.url) return;
-    void openUrl(update.url).catch(() => { updateMsg = '打开发布页失败，请到 GitHub 的 Releases 页面手动下载'; });
+    void openUrl(update.url).catch(() => { updateMsg = '打开下载地址失败，请手动访问 www.linyong.tech/download/lterm/'; });
   }
 
   function openUpdateDialog() {
@@ -205,7 +205,7 @@
     updateOpen = true;
   }
 
-  // 自动更新只负责下载安装；检测与说明仍以 GitHub API 的结果为准
+  // 自动更新只负责下载安装；检测与说明仍以更新服务器的 latest.json 为准
   async function autoUpdate() {
     if (autoUpdating) return;
     if (installKind === 'portable') { autoMsg = PORTABLE_UPDATE_HINT; return; }
@@ -245,7 +245,7 @@
         autoMsg = '安装程序已启动，应用即将退出；若未退出请手动关闭后重新打开';
       }
     } catch (e) {
-      autoMsg = `自动更新失败：${e instanceof Error ? e.message : String(e)}。请点「手动下载」到发布页下载安装包。`;
+      autoMsg = `自动更新失败：${e instanceof Error ? e.message : String(e)}。请点「手动下载」从更新站下载安装包。`;
     } finally {
       autoUpdating = false;
     }
@@ -1306,7 +1306,7 @@
           {/if}
         </div>
         {#if updateMsg}<div class="supd">{updateMsg}</div>{/if}
-        <label class="ck"><input type="checkbox" bind:checked={prefCheckUpdate} onchange={saveSettingsSoon} /> 启动时自动检查新版本（只访问 GitHub Releases 接口，不发任何本机信息）</label>
+        <label class="ck"><input type="checkbox" bind:checked={prefCheckUpdate} onchange={saveSettingsSoon} /> 启动时自动检查新版本（只访问 linyong.tech 更新服务器，不发任何本机信息）</label>
 
         <div class="spath" title="设置、服务器列表、known_hosts 都存在这里">设置保存在：<code>{dataDir || '…'}</code></div>
       </div>
