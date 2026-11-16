@@ -271,7 +271,7 @@ pub fn spawn_worker(
                     let sftp = sftp.clone();
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let (okv, msg) = match upload_one(&app, &sftp, &local, &remote, cancel_rx).await {
+                        let (okv, msg) = match upload_one(&app, &sftp, &local, &remote, &transfer_id, cancel_rx).await {
                             Ok(()) => (true, String::new()),
                             Err(e) => (false, e),
                         };
@@ -284,7 +284,7 @@ pub fn spawn_worker(
                     let sftp = sftp.clone();
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let (okv, msg) = match download_one(&app, &sftp, &remote, &local, cancel_rx).await {
+                        let (okv, msg) = match download_one(&app, &sftp, &remote, &local, &transfer_id, cancel_rx).await {
                             Ok(()) => (true, String::new()),
                             Err(e) => (false, e),
                         };
@@ -624,8 +624,8 @@ pub async fn download_tree(
     Ok(())
 }
 
-async fn upload_one(app: &AppHandle, sftp: &SftpSession, local: &str, remote: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
-    let id = remote.to_string();
+async fn upload_one(app: &AppHandle, sftp: &SftpSession, local: &str, remote: &str, transfer_id: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
+    let id = transfer_id.to_string();
     let is_dir = tokio::fs::metadata(local).await.map(|m| m.is_dir()).unwrap_or(false);
     let mut prog = |done: u64, total: u64| {
         let _ = app.emit("sftp-progress", ProgressPayload { id: id.clone(), done, total });
@@ -681,8 +681,8 @@ pub async fn download_core(
     Ok(())
 }
 
-async fn download_one(app: &AppHandle, sftp: &SftpSession, remote: &str, local: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
-    let id = local.to_string();
+async fn download_one(app: &AppHandle, sftp: &SftpSession, remote: &str, local: &str, transfer_id: &str, mut cancel: oneshot::Receiver<()>) -> Result<(), String> {
+    let id = transfer_id.to_string();
     let meta = sftp.metadata(remote).await.map_err(|e| format!("远端 stat 失败: {e}"))?;
     let mut prog = |done: u64, total: u64| {
         let _ = app.emit("sftp-progress", ProgressPayload { id: id.clone(), done, total });
