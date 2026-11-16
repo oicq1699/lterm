@@ -47,6 +47,8 @@
     prefContextMenu: boolean;
     /** Ctrl+Enter 发送的字节：'newline'（等价 Alt+Enter）| 'csiu'（Kitty 编码）| 'same'（不拦截） */
     prefCtrlEnter: string;
+    /** 反转复制/粘贴：Ctrl+C/V 走应用复制粘贴，Ctrl+Shift+C/V 发原始 \x03/\x16 */
+    prefSwapCopyPaste: boolean;
     onClosed: () => void;
     onClone?: () => void;
     /** 面板收起/关闭时请求把焦点交还终端（xterm 输入框只能有一个持有者） */
@@ -61,7 +63,7 @@
     prefSftpWindow = 'embedded', profileName = '', sessionPasswords = {},
     prefConfirmSftpDelete = true, prefConfirmSftpOverwrite = false,
     prefCopyOnSelect, prefConfirmMultiLine,
-    prefContextMenu, prefCtrlEnter, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
+    prefContextMenu, prefCtrlEnter, prefSwapCopyPaste, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
@@ -387,8 +389,16 @@
         return false;
       }
       // preventDefault：屏蔽 WebView2 原生 Ctrl+Shift+C/V 快捷键，避免与手动 paste 叠加成双份
-      if (e.shiftKey && k === 'c') { e.preventDefault(); copySelection(); return false; }
-      if (e.shiftKey && k === 'v') { e.preventDefault(); pasteClipboard(); return false; }
+      if (prefSwapCopyPaste) {
+        // 反转模式：Ctrl+C/V = 复制/粘贴；Ctrl+Shift+C/V = 直接发原始 \x03/\x16 给 PTY
+        if (!e.shiftKey && k === 'c') { e.preventDefault(); copySelection(); return false; }
+        if (!e.shiftKey && k === 'v') { e.preventDefault(); pasteClipboard(); return false; }
+        if (e.shiftKey && k === 'c') { e.preventDefault(); sendText('\x03'); return false; }
+        if (e.shiftKey && k === 'v') { e.preventDefault(); sendText('\x16'); return false; }
+      } else {
+        if (e.shiftKey && k === 'c') { e.preventDefault(); copySelection(); return false; }
+        if (e.shiftKey && k === 'v') { e.preventDefault(); pasteClipboard(); return false; }
+      }
       if (!e.shiftKey && k === 'f') { e.preventDefault(); showSearch = true; return false; }
       if (k === '=' || k === '+') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 1 })); return false; }
       if (k === '-') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: -1 })); return false; }

@@ -76,7 +76,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string; sftpWindow: string };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string; sftpWindow: string; swapCopyPaste: boolean };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -94,6 +94,7 @@
   let lockBusy = $state(false);
   let collapsedFolders = $state<string[]>([]);
   let prefCtrlEnter = $state('newline');
+  let prefSwapCopyPaste = $state(false);
   let prefPalette = $state('tango');
   let prefBright = $state(0);
   let dataDir = $state('');
@@ -116,6 +117,7 @@
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
+        swapCopyPaste: prefSwapCopyPaste,
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
         sftpHist: prefSftpHist, sftpWindow: prefSftpWindow, confirmSftpDelete: prefConfirmSftpDelete,
         confirmSftpOverwrite: prefConfirmSftpOverwrite,
@@ -853,6 +855,7 @@
       prefContextMenu = s.contextMenu;
       collapsedFolders = s.collapsedFolders ?? [];
       prefCtrlEnter = s.ctrlEnter || 'newline';
+      prefSwapCopyPaste = s.swapCopyPaste === true;
       prefPalette = s.palette || 'tango';
       prefBright = s.bright || 0;
       prefConfirmClose = s.confirmClose !== false;
@@ -1093,7 +1096,7 @@
         <div class="welcome">
           <h2>lterm</h2>
           <p>左侧添加服务器，双击连接。支持 ssh-agent / 密钥 / 密码认证，RDP 主机交给系统远程桌面客户端。</p>
-          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · Ctrl+Shift+C/V 复制/粘贴 · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
+          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · {prefSwapCopyPaste ? 'Ctrl+C/V 复制/粘贴，Ctrl+Shift+C 发 SIGINT' : 'Ctrl+Shift+C/V 复制/粘贴'} · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
         </div>
       {/if}
       {#each tabs as t, i (t.sid)}
@@ -1115,6 +1118,7 @@
                  {prefConfirmMultiLine}
                  prefContextMenu={prefContextMenu}
                  prefCtrlEnter={prefCtrlEnter}
+                 prefSwapCopyPaste={prefSwapCopyPaste}
                  onClone={() => activeTab && connect(activeTab.profile)}
                  onClosed={() => onTabClosed(t.sid)}
                  onFocusBack={focusActive}
@@ -1295,6 +1299,8 @@
           </select>
         </div>
         <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
+        <label class="ck"><input type="checkbox" bind:checked={prefSwapCopyPaste} onchange={saveSettingsSoon} /> 反转 Ctrl+C/V 与 Ctrl+Shift+C/V（Ctrl+C 复制、Ctrl+V 粘贴）</label>
+        <div class="hint">反转后 Ctrl+Shift+C 直接给终端发 SIGINT（\x03），Ctrl+Shift+V 发 \x16；不再走应用复制/粘贴。</div>
 
         <div class="sec">更新</div>
         <div class="srow">

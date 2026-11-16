@@ -40,6 +40,8 @@ pub struct Settings {
     pub edit_cmd: String,
     /// SFTP 打开方式：embedded=标签内嵌面板，window=独立窗口
     pub sftp_window: String,
+    /// 反转复制/粘贴快捷键：Ctrl+C/V 复制粘贴，Ctrl+Shift+C/V 发原始 \x03/\x16
+    pub swap_copy_paste: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +66,7 @@ impl Default for Settings {
             skip_update: String::new(),
             edit_cmd: String::new(),
             sftp_window: "embedded".into(),
+            swap_copy_paste: false,
         }
     }
 }
@@ -128,6 +131,7 @@ mod tests {
         assert_eq!(st.inner.skip_update, "", "老配置没有跳过版本的概念");
         assert_eq!(st.inner.edit_cmd, "", "老配置缺 editCmd 应默认空串");
         assert_eq!(st.inner.sftp_window, "embedded", "老配置缺 sftpWindow 应默认内嵌");
+        assert!(!st.inner.swap_copy_paste, "老配置缺 swapCopyPaste 应默认不反转复制/粘贴快捷键");
 
         let mut s = st.inner.clone();
         s.ctrl_enter = "same".into();
