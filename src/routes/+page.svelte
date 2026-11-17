@@ -76,7 +76,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string; sftpWindow: string; swapCopyPaste: boolean };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string; sftpWindow: string; swapCopyPaste: boolean; softwareRender: boolean };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -95,6 +95,7 @@
   let collapsedFolders = $state<string[]>([]);
   let prefCtrlEnter = $state('newline');
   let prefSwapCopyPaste = $state(false);
+  let prefSoftwareRender = $state(false);
   let prefPalette = $state('tango');
   let prefBright = $state(0);
   let dataDir = $state('');
@@ -118,6 +119,7 @@
         contextMenu: prefContextMenu,
         collapsedFolders, ctrlEnter: prefCtrlEnter,
         swapCopyPaste: prefSwapCopyPaste,
+        softwareRender: prefSoftwareRender,
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
         sftpHist: prefSftpHist, sftpWindow: prefSftpWindow, confirmSftpDelete: prefConfirmSftpDelete,
         confirmSftpOverwrite: prefConfirmSftpOverwrite,
@@ -856,6 +858,7 @@
       collapsedFolders = s.collapsedFolders ?? [];
       prefCtrlEnter = s.ctrlEnter || 'newline';
       prefSwapCopyPaste = s.swapCopyPaste === true;
+      prefSoftwareRender = s.softwareRender === true;
       prefPalette = s.palette || 'tango';
       prefBright = s.bright || 0;
       prefConfirmClose = s.confirmClose !== false;
@@ -1119,6 +1122,7 @@
                  prefContextMenu={prefContextMenu}
                  prefCtrlEnter={prefCtrlEnter}
                  prefSwapCopyPaste={prefSwapCopyPaste}
+                 prefSoftwareRender={prefSoftwareRender}
                  onClone={() => activeTab && connect(activeTab.profile)}
                  onClosed={() => onTabClosed(t.sid)}
                  onFocusBack={focusActive}
@@ -1245,6 +1249,8 @@
           </select>
         </div>
         <div class="hint">配色换的是那 16 个 ANSI 色（含背景）；程序自己写死的真彩不走这张表。字体需系统已安装（如 MesloLGS NF），可直接输入名称。改动即时生效并保存。</div>
+        <label class="ck"><input type="checkbox" bind:checked={prefSoftwareRender} onchange={saveSettingsSoon} /> 软件渲染</label>
+        <div class="hint">不用 GPU 加速渲染终端。Windows 上出现花屏、文字丢失时开启可恢复；已开与新建终端即时生效，代价是极端滚动性能略降。</div>
 
         <div class="sec">行为</div>
         <label class="ck"><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>

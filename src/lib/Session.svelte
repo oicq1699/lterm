@@ -49,6 +49,8 @@
     prefCtrlEnter: string;
     /** 反转复制/粘贴：Ctrl+C/V 走应用复制粘贴，Ctrl+Shift+C/V 发原始 \x03/\x16 */
     prefSwapCopyPaste: boolean;
+    /** 软件渲染：不加载 WebGL 插件，走 xterm 自带 DOM 渲染器（Windows GPU 花屏/丢字时救急） */
+    prefSoftwareRender?: boolean;
     onClosed: () => void;
     onClone?: () => void;
     /** 面板收起/关闭时请求把焦点交还终端（xterm 输入框只能有一个持有者） */
@@ -63,7 +65,7 @@
     prefSftpWindow = 'embedded', profileName = '', sessionPasswords = {},
     prefConfirmSftpDelete = true, prefConfirmSftpOverwrite = false,
     prefCopyOnSelect, prefConfirmMultiLine,
-    prefContextMenu, prefCtrlEnter, prefSwapCopyPaste, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
+    prefContextMenu, prefCtrlEnter, prefSwapCopyPaste, prefSoftwareRender = false, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
@@ -209,6 +211,36 @@
     term!.options.theme = termTheme(prefPalette, prefBright);
   });
 
+  let webglAddon: WebglAddon | undefined;
+
+  // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
+  // 软件渲染下卸载插件即回 DOM；dispose 后清空引用，保证再次关闭软件渲染时能重新加载
+  function applyRenderer(software: boolean) {
+    if (software) {
+      // 卸载 WebGL 渲染器，xterm 自动回 DOM；花屏/丢字时可救
+      try { webglAddon?.dispose(); } catch { /* 已释放 */ }
+      webglAddon = undefined;
+    } else if (!webglAddon && term) {
+      try {
+        const g = new WebglAddon();
+        // 上下文丢失后清引用：否则之后切回 WebGL 会以为插件还在，永远不重载
+        g.onContextLoss(() => {
+          try { g.dispose(); } catch { /* 已释放 */ }
+          if (webglAddon === g) webglAddon = undefined;
+        });
+        term.loadAddon(g);
+        webglAddon = g;
+      } catch { /* 无 WebGL 环境，保持默认渲染器 */ }
+    }
+  }
+
+  // 软件渲染开关即时作用到已开着的终端：只换渲染器，不重建终端
+  $effect(() => {
+    const software = prefSoftwareRender;
+    if (!termReady || !term || dead) return;
+    applyRenderer(software);
+  });
+
   onMount(async () => {
     term = new Terminal({
       fontFamily: fontStack(),
@@ -332,11 +364,7 @@
       helperTa.addEventListener('blur', () => { compActive = false; compBuffer = ''; }, true);
     }
     // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
-    try {
-      const g = new WebglAddon();
-      g.onContextLoss(() => { try { g.dispose(); } catch { /* 已释放 */ } });
-      term.loadAddon(g);
-    } catch { /* 无 WebGL 环境，保持默认渲染器 */ }
+    applyRenderer(prefSoftwareRender);
     termReady = true;
     requestAnimationFrame(() => {
       doFit();
@@ -458,6 +486,9 @@
   onDestroy(() => {
     window.removeEventListener('keydown', onWinKeydown, true);
     for (const u of unlistenAll) u();
+    // 显式释放 GPU 上下文，避免每关一个标签漏一份
+    try { webglAddon?.dispose(); } catch { /* 已释放 */ }
+    webglAddon = undefined;
     term?.dispose();
   });
 </script>
