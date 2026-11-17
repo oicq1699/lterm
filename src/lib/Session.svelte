@@ -212,26 +212,42 @@
   });
 
   let webglAddon: WebglAddon | undefined;
+  // webglcontextlost 捕获监听的拆除函数，随卸载一起清掉
+  let webglLostCleanup: (() => void) | undefined;
+
+  // 幂等卸载：拆监听 + dispose 插件 + 清引用。onContextLoss 兜底和 onDestroy 都走这里
+  function unloadWebgl() {
+    webglLostCleanup?.();
+    webglLostCleanup = undefined;
+    try { webglAddon?.dispose(); } catch { /* 已释放 */ }
+    webglAddon = undefined;
+  }
 
   // WebGL 渲染器：修复 DOM 渲染器下 TUI 边框竖线断续问题（不可用时自动回退）
   // 软件渲染下卸载插件即回 DOM；dispose 后清空引用，保证再次关闭软件渲染时能重新加载
   function applyRenderer(software: boolean) {
     if (software) {
       // 卸载 WebGL 渲染器，xterm 自动回 DOM；花屏/丢字时可救
-      try { webglAddon?.dispose(); } catch { /* 已释放 */ }
-      webglAddon = undefined;
-    } else if (!webglAddon && term) {
-      try {
-        const g = new WebglAddon();
-        // 上下文丢失后清引用：否则之后切回 WebGL 会以为插件还在，永远不重载
-        g.onContextLoss(() => {
-          try { g.dispose(); } catch { /* 已释放 */ }
-          if (webglAddon === g) webglAddon = undefined;
-        });
-        term.loadAddon(g);
-        webglAddon = g;
-      } catch { /* 无 WebGL 环境，保持默认渲染器 */ }
+      unloadWebgl();
+      return;
     }
+    if (webglAddon || !term || !termHost) return;
+    const host = termHost;
+    try {
+      const g = new WebglAddon();
+      // 上下文丢失的恢复路径在 addon-webgl 0.18 里有脏对象风暴（restore 后向已失效上下文删对象刷屏、残留花屏），
+      // 所以捕获阶段抢在插件自己的处理之前直接卸载回 DOM 渲染，脏帧不再有机会显示。
+      // webglcontextlost 不冒泡，但挂在祖先上的捕获监听仍会先于 canvas 自身监听执行
+      const onLost = () => unloadWebgl();
+      host.addEventListener('webglcontextlost', onLost, true);
+      webglLostCleanup = () => host.removeEventListener('webglcontextlost', onLost, true);
+      g.onContextLoss(() => {
+        // 兜底：万一捕获监听没赶上（如插件先收到事件并已自行恢复失败）
+        unloadWebgl();
+      });
+      term.loadAddon(g);
+      webglAddon = g;
+    } catch { /* 无 WebGL 环境，保持默认渲染器 */ }
   }
 
   // 软件渲染开关即时作用到已开着的终端：只换渲染器，不重建终端
@@ -486,9 +502,8 @@
   onDestroy(() => {
     window.removeEventListener('keydown', onWinKeydown, true);
     for (const u of unlistenAll) u();
-    // 显式释放 GPU 上下文，避免每关一个标签漏一份
-    try { webglAddon?.dispose(); } catch { /* 已释放 */ }
-    webglAddon = undefined;
+    // 显式释放 GPU 上下文，避免每关一个标签漏一份（顺带拆掉 webglcontextlost 捕获监听）
+    unloadWebgl();
     term?.dispose();
   });
 </script>
