@@ -26,7 +26,7 @@
     created_at: number; updated_at: number;
   };
   type Hit = { server: Profile; score: number };
-  type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null; passwords: Record<string, string> };
+  type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null; passwords: Record<string, string>; title?: string };
 
   let servers: Profile[] = $state([]);
   let folders: string[] = $state([]);
@@ -44,6 +44,15 @@
 
   let tabs = $state<Tab[]>([]);
   let activeIdx = $state(-1);
+  // 标签重命名 + 拖动换位；title 只影响标签显示，不写回 t.profile
+  let renamingIdx = $state(-1);
+  let renameVal = $state('');
+  type TabDrag = { from: number; x0: number; live: boolean };
+  let tabDrag = $state<TabDrag | null>(null);
+  let tabDrop = $state<number | null>(null); // 插入位（0..tabs.length，按拖动前下标）
+  let tabbarEl: HTMLDivElement | undefined = $state();
+  let renameEl: HTMLInputElement | undefined = $state();
+  let tabClickMute = false; // 拖完紧跟的那次 click 不该再当成“点标签选中”
   // 双击到连上之间（TCP+认证最坏可达几十秒）必须有显性反馈：id → 名称
   let connecting = $state<Map<string, string>>(new Map());
   const connectingIds = $derived(new Set(connecting.keys()));
@@ -750,6 +759,8 @@
   async function closeTab(i: number) {
     const t = tabs[i];
     if (!t) return;
+    // 下标即将变动，先把未提交的改名落到当前标签上，免得改到隔壁
+    if (renamingIdx >= 0) commitRename();
     if (t.alive && prefConfirmClose && !confirm(`断开 ${t.profile.username}@${t.profile.host}？传输中的任务会一起中断。`)) return;
     if (t.alive) {
       try { await invoke('disconnect', { id: t.sid }); } catch { /* 已断开 */ }
@@ -774,6 +785,92 @@
     const i = activeIdx;
     closeTab(i);
     connect(t.profile);
+  }
+
+  // ---- 标签重命名 + 拖动换位 ----
+  // 拖拽同样走 pointer 事件：HTML5 draggable 会被 Tauri 的 dragDropEnabled 截走（SFTP 传文件要用）
+  function startRename(i: number, e: MouseEvent) {
+    // 双击关闭按钮/改名输入框自身不算重新开始改名
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('input,button')) return;
+    e.preventDefault();
+    renamingIdx = i;
+    renameVal = tabs[i]?.title ?? '';
+    requestAnimationFrame(() => renameEl?.select());
+  }
+  function renameKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+    // 先退出改名态，随后的 blur 会被 renamingIdx < 0 挡住，不会重复提交
+    else if (e.key === 'Escape') { e.preventDefault(); renamingIdx = -1; }
+  }
+  function commitRename() {
+    if (renamingIdx < 0) return;
+    const i = renamingIdx;
+    renamingIdx = -1;
+    const t = tabs[i];
+    if (!t) return;
+    // 留空/纯空白就清掉自定义标题，显示回服务器名；profile 是列表共用的，绝不能动
+    t.title = renameVal.trim() || undefined;
+  }
+  function tabGripDown(e: PointerEvent, i: number) {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('input,button')) return; // 改名输入框和关闭按钮不参与拖动
+    // 在别的标签上按下时先把没提交的改名落盘，别让切换把它丢了；按自己的标签则是想改名，不拖
+    if (renamingIdx >= 0 && renamingIdx !== i) commitRename();
+    if (renamingIdx === i) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    tabDrag = { from: i, x0: e.clientX, live: false };
+    tabDrop = null;
+  }
+  function tabGripMove(e: PointerEvent) {
+    const d = tabDrag;
+    if (!d) return;
+    // 和侧栏一样留点容差，免得单击/双击时手抖一下就被当成拖动
+    if (!d.live) {
+      if (Math.abs(e.clientX - d.x0) < 5) return;
+      d.live = true;
+    }
+    // 拖到标签栏左右边缘时自动滚，标签多了不用为了挪一个来回拖好几趟
+    const box = tabbarEl?.getBoundingClientRect();
+    if (box && tabbarEl) {
+      if (e.clientX < box.left + 30) tabbarEl.scrollLeft -= 12;
+      else if (e.clientX > box.right - 30) tabbarEl.scrollLeft += 12;
+    }
+    const tabEl = (document.elementsFromPoint(e.clientX, e.clientY) as HTMLElement[])
+      .find((el) => el.classList.contains('tab') && el.dataset.tabidx !== undefined);
+    if (tabEl) {
+      const r = tabEl.getBoundingClientRect();
+      const idx = Number(tabEl.dataset.tabidx);
+      const at = e.clientX < r.left + r.width / 2 ? idx : idx + 1;
+      tabDrop = Math.max(0, Math.min(tabs.length, at));
+    } else {
+      tabDrop = null;
+    }
+  }
+  function tabGripUp(e: PointerEvent) {
+    const d = tabDrag, at = tabDrop;
+    tabDrag = null; tabDrop = null;
+    const el = e.currentTarget as HTMLElement;
+    if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    if (!d?.live) return;
+    // 拖动后浏览器可能补一次 click，别让它把指针底下的另一个标签选中
+    tabClickMute = true;
+    setTimeout(() => { tabClickMute = false; }, 0);
+    if (at === null || at === d.from || at === d.from + 1) return;
+    moveTab(d.from, at);
+  }
+  // 把第 from 个标签插到 at（按挪走前的下标算）；换完按 sid 把 activeIdx 找回来
+  function moveTab(from: number, at: number) {
+    const activeSid = tabs[activeIdx]?.sid;
+    const arr = [...tabs];
+    const [m] = arr.splice(from, 1);
+    const insert = at > from ? at - 1 : at;
+    arr.splice(insert, 0, m);
+    tabs = arr;
+    const ni = tabs.findIndex((x) => x.sid === activeSid);
+    if (ni >= 0) activeIdx = ni;
+    if (renamingIdx === from) renamingIdx = -1; // 拖拽中不保留改名态
   }
 
   function setFont(size: number) {
@@ -1093,14 +1190,29 @@
   {/if}
 
   <section class="right">
-    <div class="tabbar">
-      {#each tabs as t, i}
-        <div class="tab" class:active={i === activeIdx} role="tab" tabindex={0} aria-selected={i === activeIdx}
-             onclick={() => { activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); }}
+    <div class="tabbar" bind:this={tabbarEl}>
+      {#each tabs as t, i (t.sid)}
+        <div class="tab" class:active={i === activeIdx}
+             class:dragging={tabDrag?.live && tabDrag.from === i}
+             class:drop-left={tabDrag?.live && tabDrop === i && tabDrag.from !== i}
+             class:drop-right={tabDrag?.live && tabDrop === i + 1 && i === tabs.length - 1 && tabDrag.from !== i}
+             role="tab" tabindex={0} aria-selected={i === activeIdx}
+             data-tabidx={i} title={t.title || t.profile.name}
+             onclick={() => { if (tabClickMute) return; activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); }}
+             ondblclick={(e) => { e.preventDefault(); startRename(i, e); }}
+             onpointerdown={(e) => tabGripDown(e, i)}
+             onpointermove={tabGripMove}
+             onpointerup={tabGripUp} onpointercancel={tabGripUp}
              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); } }}>
           <span class="dot" class:connected={t.alive} class:closed={!t.alive}></span>
-          {t.profile.name}
-          <button class="close" aria-label={`关闭标签 ${t.profile.name}`}
+          {#if renamingIdx === i}
+            <input class="rename" bind:this={renameEl} bind:value={renameVal}
+                   onkeydown={renameKeydown} onblur={commitRename}
+                   onmousedown={(e) => e.stopPropagation()} aria-label="重命名标签" />
+          {:else}
+            {t.title || t.profile.name}
+          {/if}
+          <button class="close" aria-label={`关闭标签 ${t.title || t.profile.name}`}
                   onmousedown={noFocus}
                   onclick={(e) => { e.stopPropagation(); closeTab(i); }}>×</button>
         </div>
@@ -1676,8 +1788,14 @@
   .right { flex: 1; display: flex; flex-direction: column; background: #101010; min-width: 0; }
   .tabbar { display: flex; background: #181818; border-bottom: 1px solid #2a2a2a; overflow-x: auto; }
   .tabbar::-webkit-scrollbar { display: none; }
-  .tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: none; border: none; border-right: 1px solid #262626; color: #999; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: none; border: none; border-right: 1px solid #262626; color: #999; cursor: pointer; font-size: 13px; white-space: nowrap; user-select: none; }
   .tab.active { background: #101010; color: #eee; box-shadow: inset 0 3px 0 0 #4fd6be; }
+  .tab.dragging { cursor: grabbing; opacity: .45; }
+  .tab.drop-left { box-shadow: inset 2px 0 0 0 #8ab4f8; }
+  .tab.drop-right { box-shadow: inset -2px 0 0 0 #8ab4f8; }
+  .tab.active.drop-left { box-shadow: inset 0 3px 0 0 #4fd6be, inset 2px 0 0 0 #8ab4f8; }
+  .tab.active.drop-right { box-shadow: inset 0 3px 0 0 #4fd6be, inset -2px 0 0 0 #8ab4f8; }
+  .tab .rename { width: 110px; font: inherit; font-size: 13px; background: #222; color: #eee; border: 1px solid #4c8bf5; border-radius: 4px; padding: 0 4px; outline: none; user-select: text; }
   .tab .close { border: none; background: none; color: inherit; padding: 0 2px; border-radius: 3px; cursor: pointer; line-height: 1; }
   .tab .close:hover { background: #444; color: #fff; }
   .newtab { color: #6a9fb5; }
