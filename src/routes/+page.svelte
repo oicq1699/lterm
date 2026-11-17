@@ -133,8 +133,28 @@
     saveTimer = setTimeout(saveSettings, 300);
   }
 
-  // ---- 新版本检测：请求由界面发（走系统 TLS，省一套 HTTPS 依赖），解析与版本比较在后端 ----
+  // ---- 新版本检测：清单交给 tauri-plugin-updater 在 Rust 侧拉取（WebView 的 fetch 会被镜像站 CORS 拦死）----
   type Release = { version: string; url: string; notes: string };
+
+  // 插件只回版本与说明、不带安装包地址：「手动下载」仍按平台从清单的 platforms 里挑一个
+  function manifestUrl(raw: Record<string, unknown>): string {
+    const platforms = raw.platforms;
+    if (typeof platforms !== 'object' || platforms === null) return '';
+    const ua = navigator.userAgent;
+    const keys = ua.includes('Windows')
+      ? ['windows-x86_64-nsis', 'windows-aarch64-nsis', 'windows-x86_64', 'windows']
+      : ua.includes('Mac')
+        ? ['darwin-aarch64', 'darwin-x86_64', 'darwin']
+        : ['linux-x86_64-appimage', 'linux-aarch64-appimage', 'linux-x86_64', 'linux'];
+    const table = platforms as Record<string, unknown>;
+    for (const k of keys) {
+      const item = table[k];
+      if (typeof item !== 'object' || item === null) continue;
+      const url = (item as { url?: unknown }).url;
+      if (typeof url === 'string' && url) return url;
+    }
+    return '';
+  }
   // 安装形态由后端探测：便携版没有可替换的安装包，自动更新只能走手动下载
   type InstallKind = 'portable' | 'nsis' | 'appimage' | 'msi' | 'other' | '';
   const PORTABLE_UPDATE_HINT = '便携版请手动下载安装包，安装一次后可自动更新';
@@ -161,21 +181,14 @@
     updateChecking = true;
     if (manual) updateMsg = '检查中…';
     try {
-      const feed = await invoke<{ api: string; current: string }>('update_feed');
-      currentVersion = feed.current;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      let res: Response;
-      try {
-        res = await fetch(feed.api, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
-      } finally {
-        clearTimeout(timer);
-      }
-      if (!res.ok) {
-        // 静态清单不该有限流；异常多为站点没同步（404）或被网关拦截
-        throw new Error(res.status === 404 ? '更新服务器上还没有清单（latest.json 缺失）' : `更新服务器返回 HTTP ${res.status}`);
-      }
-      const rel = await invoke<Release | null>('update_check', { body: await res.text() });
+      currentVersion = (await invoke<{ api: string; current: string }>('update_feed')).current;
+      // 用更新插件在 Rust 侧拉清单：WebView 直接 fetch 会被镜像站的 CORS 拦死
+      const found = await checkAutoUpdate();
+      const rel: Release | null = found
+        ? { version: found.version, url: manifestUrl(found.rawJson), notes: found.body ?? '' }
+        : null;
+      // 这里只用元信息，不下载安装，及时释放插件对应的 Rust 资源
+      if (found) void found.close().catch(() => {});
       if (rel && rel.version !== skipUpdate) {
         update = rel;
         updateDismissed = false;
@@ -183,15 +196,18 @@
         autoProgress = 0;
         // 启动时的静默检查只出提示条；手动检查有结果才直接展开选择窗口
         if (manual) {
-          updateMsg = `发现新版本 v${rel.version}（当前 v${feed.current}）`;
+          updateMsg = `发现新版本 v${rel.version}（当前 v${currentVersion}）`;
           updateOpen = true;
         }
       } else if (manual) {
-        updateMsg = rel ? `v${rel.version} 被你忽略过，点「恢复提醒」会再问` : `已是最新版本 v${feed.current}`;
+        updateMsg = rel ? `v${rel.version} 被你忽略过，点「恢复提醒」会再问` : `已是最新版本 v${currentVersion}`;
       }
     } catch (e) {
       // 启动时的静默检查失败不打扰，手动检查要把原因显示出来
-      if (manual) updateMsg = `检查失败：${e instanceof Error ? e.message : String(e)}`;
+      if (manual) {
+        const m = e instanceof Error ? e.message : String(e);
+        updateMsg = m.includes('404') ? '检查失败：更新服务器上还没有清单（latest.json 缺失）' : `检查失败：${m}`;
+      }
     } finally {
       updateChecking = false;
     }

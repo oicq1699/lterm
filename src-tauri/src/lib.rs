@@ -197,7 +197,6 @@ pub fn run() {
             get_data_dir,
             resolve_exit,
             update::update_feed,
-            update::update_check,
             update::install_kind,
             clipboard::clipboard_write,
             jump::get_proxy_chain,
