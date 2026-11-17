@@ -272,7 +272,7 @@
   }
 
   // ---- 文件右键菜单（两侧列表共用） ----
-  const CTX_W = 150, CTX_H = 40;
+  const CTX_W = 150, CTX_H = 100;
   function openMenu(e: MouseEvent, which: 'local' | 'remote', en: Entry) {
     e.preventDefault();
     e.stopPropagation();
@@ -301,6 +301,17 @@
       upsertEdit(info);
       await invoke('open_with_editor', { path: info.local_path });
     } catch (e) { error = String(e); }
+  }
+
+  function menuCopy(kind: 'name' | 'path') {
+    const m = menu;
+    if (!m) return;
+    menu = null;
+    const sel = m.which === 'local' ? localSel : remoteSel;
+    const items = entriesOf(m.which).filter((x) => sel.has(x.path));
+    const list = items.length ? items : [m.entry];
+    const text = list.map((x) => (kind === 'name' ? x.name : x.path)).join('\n');
+    invoke('clipboard_write', { text }).catch((e) => { error = String(e); });
   }
 
   $effect(() => {
@@ -353,6 +364,7 @@
   // Ctrl+A 只挂在列表子树上：终端里的 Ctrl+A 由 xterm 自己的输入区收，
   // 路径框里的 Ctrl+A 仍是浏览器原生的全选文字
   function listKey(e: KeyboardEvent, which: 'local' | 'remote') {
+    if (e.key === 'F2') { e.preventDefault(); rename(which); return; }
     if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return;
     if ((e.target as HTMLElement | null)?.tagName === 'INPUT') return;
     e.preventDefault();
@@ -560,7 +572,7 @@
         <button onclick={uploadSelected} title="上传选中到远端当前目录（Ctrl+A 全选本目录）">上传 →</button>
         <button onclick={mkdirLocal}>新建目录</button>
         <button onclick={() => del('local')} title="删除选中项（Ctrl+A 全选本目录）">删除</button>
-        <button onclick={() => rename('local')}>重命名</button>
+        <button onclick={() => rename('local')} title="重命名选中项（F2）">重命名</button>
       </div>
     </div>
     <div class="pane">
@@ -609,7 +621,7 @@
         <button onclick={downloadSelected} title="下载选中到本地当前目录（Ctrl+A 全选本目录）">← 下载</button>
         <button onclick={mkdirRemote}>新建目录</button>
         <button onclick={() => del('remote')} title="删除选中项（Ctrl+A 全选本目录）">删除</button>
-        <button onclick={() => rename('remote')}>重命名</button>
+        <button onclick={() => rename('remote')} title="重命名选中项（F2）">重命名</button>
       </div>
     </div>
   </div>
@@ -665,6 +677,8 @@
       <button role="menuitem" class:off={menu.entry.is_dir} disabled={menu.entry.is_dir}
               title={menu.entry.is_dir ? '目录不能编辑' : '用外部编辑器打开'}
               onclick={menuEdit}>编辑（文本）</button>
+      <button role="menuitem" onclick={() => menuCopy('name')}>复制文件名</button>
+      <button role="menuitem" onclick={() => menuCopy('path')}>复制路径</button>
     </div>
   {/if}
 </div>
