@@ -1162,10 +1162,6 @@
                 {/if}
               </button>
               {#if !prefCompactList}<span class="acts">
-                {#if !searching}
-                  <button class="icon" disabled={i === 0} onclick={() => moveServer(hit.server.id, -1)} title="上移（组内）">↑</button>
-                  <button class="icon" disabled={i === sec.items.length - 1} onclick={() => moveServer(hit.server.id, 1)} title="下移（组内）">↓</button>
-                {/if}
                 <button class="icon" onclick={() => edit(hit.server)} title="编辑">✎</button>
                 <button class="icon" onclick={() => duplicate(hit.server)} title="复制到编辑窗口，保存后才新增"><Icon name="copy" size={13} /></button>
                 <button class="del" onclick={() => remove(hit.server.id)} title="删除">×</button>
