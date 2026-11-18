@@ -51,7 +51,7 @@
     prefSwapCopyPaste: boolean;
     /** 软件渲染：不加载 WebGL 插件，走 xterm 自带 DOM 渲染器（Windows GPU 花屏/丢字时救急） */
     prefSoftwareRender?: boolean;
-    onClosed: () => void;
+    onClosed: (normalExit: boolean) => void;
     onClone?: () => void;
     /** 面板收起/关闭时请求把焦点交还终端（xterm 输入框只能有一个持有者） */
     onFocusBack?: () => void;
@@ -456,11 +456,11 @@
     unlistenAll.push(await listen<{ id: string; data: string }>('pty-output', (ev) => {
       if (ev.payload.id === sessionId) term?.write(b64ToBytes(ev.payload.data));
     }));
-    unlistenAll.push(await listen<{ id: string; reason: string }>('pty-closed', (ev) => {
+    unlistenAll.push(await listen<{ id: string; reason: string; normal_exit: boolean }>('pty-closed', (ev) => {
       if (ev.payload.id !== sessionId) return;
       dead = true;
       term?.writeln('\r\n\x1b[33m' + ev.payload.reason + '\x1b[0m');
-      onClosed();
+      onClosed(ev.payload.normal_exit === true);
     }));
   });
 

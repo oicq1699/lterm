@@ -765,6 +765,8 @@
     if (t.alive) {
       try { await invoke('disconnect', { id: t.sid }); } catch { /* 已断开 */ }
     }
+    // 等待断开期间标签可能已被移除（例如远端恰好正常退出触发自动关闭），避免重复 splice 误删相邻标签
+    if (tabs[i] !== t) return;
     fitFns.delete(t.sid);
     tabApis.delete(t.sid);
     tabs.splice(i, 1);
@@ -774,9 +776,17 @@
     if (nt) requestAnimationFrame(() => fitFns.get(nt.sid)?.());
   }
 
-  function onTabClosed(sid: string) {
-    const t = tabs.find((x) => x.sid === sid);
-    if (t) t.alive = false;
+  function onTabClosed(sid: string, normalExit: boolean) {
+    const i = tabs.findIndex((x) => x.sid === sid);
+    if (i < 0) return;
+    const t = tabs[i];
+    if (normalExit) {
+      // 先标记为已结束，closeTab 便不会弹确认、也不会再发一次断开；远端 shell 已退出，只需移除标签
+      t.alive = false;
+      closeTab(i);
+      return;
+    }
+    t.alive = false;
   }
 
   function doReconnect() {
@@ -1252,7 +1262,7 @@
                  prefSwapCopyPaste={prefSwapCopyPaste}
                  prefSoftwareRender={prefSoftwareRender}
                  onClone={() => activeTab && connect(activeTab.profile)}
-                 onClosed={() => onTabClosed(t.sid)}
+                 onClosed={(normalExit) => onTabClosed(t.sid, normalExit)}
                  onFocusBack={focusActive}
                  onResize={(cols, rows) => { if (t.alive) invoke('resize', { id: t.sid, cols, rows }); }}
                  registerFit={(fn) => fitFns.set(t.sid, fn)}

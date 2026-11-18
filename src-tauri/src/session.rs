@@ -143,6 +143,7 @@ struct OutputPayload {
 struct ClosedPayload {
     id: String,
     reason: String,
+    normal_exit: bool,
 }
 
 const COALESCE_MS: u64 = 8;
@@ -217,6 +218,8 @@ pub async fn connect(
         let mut ticker = tokio::time::interval(Duration::from_millis(COALESCE_MS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut reason = String::from("连接中断");
+        // 远端 shell 正常退出时服务器会先发 ExitStatus 再发 Eof；只认 ExitStatus，掉线等异常仍保留标签
+        let mut normal_exit = false;
         let mut forwards: HashMap<u16, (oneshot::Sender<()>, ForwardInfo)> = HashMap::new();
         loop {
             tokio::select! {
@@ -287,6 +290,7 @@ pub async fn connect(
                             if app.emit("pty-output", &payload).is_err() { reason = "界面已关闭".into(); break; }
                         }
                     }
+                    Some(ChannelMsg::ExitStatus { .. }) => normal_exit = true,
                     Some(ChannelMsg::Eof | ChannelMsg::Close) => { reason = "远端关闭了连接".into(); break; }
                     Some(_) => {}
                     None => { reason = "远端关闭了连接".into(); break; }
@@ -305,7 +309,7 @@ pub async fn connect(
             .await;
         let _ = app.emit(
             "pty-closed",
-            ClosedPayload { id: actor_id.clone(), reason },
+            ClosedPayload { id: actor_id.clone(), reason, normal_exit },
         );
         if let Ok(mut guard) = app.state::<Mutex<Registry>>().lock() {
             guard.entries.remove(&actor_id);
