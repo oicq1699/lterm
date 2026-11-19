@@ -118,6 +118,42 @@
   let prefCheckUpdate = $state(true);
   let skipUpdate = $state('');
 
+  // 设置弹窗左侧分区导航：点击平滑滚动，滚动时按位置高亮
+  const SEC_IDS = ['set-appearance', 'set-behavior', 'set-security', 'set-keys', 'set-update'] as const;
+  let activeSec = $state('set-appearance');
+  let setMainEl: HTMLDivElement | undefined = $state();
+  let navProg: 'none' | 'click' = 'none'; // 点击滚动期间暂停 scroll-spy，避免中途高亮乱跳
+  let spyTs = 0;
+
+  function gotoSec(id: string) {
+    activeSec = id;
+    navProg = 'click';
+    const el = document.getElementById(id);
+    const box = setMainEl;
+    if (el && box) {
+      // 用 getBoundingClientRect 算相对滚动容器的位置，不依赖 offsetParent 是谁
+      const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 8;
+      box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      window.setTimeout(() => { navProg = 'none'; }, 600); // 等滚动动画结束再恢复 spy
+    } else navProg = 'none';
+  }
+
+  function onSetScroll() {
+    if (navProg !== 'none') return;
+    const now = performance.now();
+    if (now - spyTs < 100) return; // 滚动事件太密，100ms 采样一次足够
+    spyTs = now;
+    const box = setMainEl;
+    if (!box) return;
+    const line = box.getBoundingClientRect().top + 60; // 分区标题越过顶部 60px 才算当前段
+    let cur: string = SEC_IDS[0];
+    for (const id of SEC_IDS) {
+      const el = document.getElementById(id);
+      if (el && el.getBoundingClientRect().top <= line) cur = id;
+    }
+    if (cur !== activeSec) activeSec = cur;
+  }
+
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   async function saveSettings() {
     if (!settingsLoaded) return;
@@ -1051,7 +1087,13 @@
   }
   async function openSettings() {
     showSettings = !showSettings;
-    if (showSettings) void loadSettingsPath();
+    if (showSettings) {
+      // 每次打开都回到顶部；弹窗刚插入 DOM 时滚动容器还没绑定，等一帧再归零
+      activeSec = 'set-appearance';
+      navProg = 'none';
+      setTimeout(() => setMainEl?.scrollTo({ top: 0 }), 0);
+      void loadSettingsPath();
+    }
     if (showSettings && !fontList) {
       try { fontList = await invoke<string[]>('list_fonts'); } catch { fontList = []; }
     }
@@ -1349,112 +1391,134 @@
           <button class="sclose" onmousedown={noFocus} onclick={closeSettings} aria-label="关闭设置">✕</button>
         </div>
 
-        <div class="sec">外观</div>
-        <div class="srow">
-          <span class="lbl">字号</span>
-          <button onclick={() => setFont(fontSize - 1)}>−</button>
-          <span class="num">{fontSize}</span>
-          <button onclick={() => setFont(fontSize + 1)}>＋</button>
-        </div>
-        <div class="srow">
-          <span class="lbl">字体</span>
-          <input class="fontin" list="fontlist" placeholder="默认（留空）" value={fontFamily}
-                 aria-label="终端字体"
-                 onchange={(e) => setFontFamily((e.target as HTMLInputElement).value)} />
-          <datalist id="fontlist">
-            {#each (fontList ?? []) as f (f)}<option value={f}></option>{/each}
-          </datalist>
-        </div>
-        <div class="srow">
-          <span class="lbl">配色</span>
-          <select class="ctlsel" bind:value={prefPalette} onchange={saveSettingsSoon}>
-            {#each Object.entries(PALETTE_LABELS) as [key, label] (key)}
-              <option value={key}>{label}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="srow">
-          <span class="lbl">增亮</span>
-          <select class="ctlsel" bind:value={prefBright} onchange={saveSettingsSoon}>
-            <option value={0}>关</option>
-            <option value={1}>弱（γ1.15）</option>
-            <option value={2}>中（γ1.3）</option>
-            <option value={3}>强（γ1.5）</option>
-          </select>
-        </div>
-        <div class="hint">配色换的是那 16 个 ANSI 色（含背景）；程序自己写死的真彩不走这张表。字体需系统已安装（如 MesloLGS NF），可直接输入名称。改动即时生效并保存。</div>
-        <label class="ck"><input type="checkbox" bind:checked={prefSoftwareRender} onchange={saveSettingsSoon} /> 软件渲染</label>
-        <div class="hint">不用 GPU 加速渲染终端。Windows 上出现花屏、文字丢失时开启可恢复；已开与新建终端即时生效，代价是极端滚动性能略降。</div>
+        <div class="setbody">
+          <nav class="setnav" aria-label="设置分区">
+            <button class="setnavi" class:on={activeSec === 'set-appearance'}
+                    aria-current={activeSec === 'set-appearance' ? 'true' : undefined}
+                    onclick={() => gotoSec('set-appearance')}>外观</button>
+            <button class="setnavi" class:on={activeSec === 'set-behavior'}
+                    aria-current={activeSec === 'set-behavior' ? 'true' : undefined}
+                    onclick={() => gotoSec('set-behavior')}>行为</button>
+            <button class="setnavi" class:on={activeSec === 'set-security'}
+                    aria-current={activeSec === 'set-security' ? 'true' : undefined}
+                    onclick={() => gotoSec('set-security')}>安全</button>
+            <button class="setnavi" class:on={activeSec === 'set-keys'}
+                    aria-current={activeSec === 'set-keys' ? 'true' : undefined}
+                    onclick={() => gotoSec('set-keys')}>键盘</button>
+            <button class="setnavi" class:on={activeSec === 'set-update'}
+                    aria-current={activeSec === 'set-update' ? 'true' : undefined}
+                    onclick={() => gotoSec('set-update')}>更新</button>
+          </nav>
 
-        <div class="sec">行为</div>
-        <label class="ck"><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
-        <label class="ck"><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
-        <label class="ck"><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
-        <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认（只影响标签页；窗口上还有连接时，退出总归会问一次）</label>
-        <label class="ck"><input type="checkbox" bind:checked={prefCompactList} onchange={saveSettingsSoon} /> 服务器列表紧凑模式（每行只显示标题，编辑/复制/删除走右键菜单）</label>
-        <label class="ck"><input type="checkbox" bind:checked={prefConfirmSftpDelete} onchange={saveSettingsSoon} /> SFTP 面板删除文件前确认（多选只问一次；关掉连目录也不问）</label>
-        <label class="ck"><input type="checkbox" bind:checked={prefConfirmSftpOverwrite} onchange={saveSettingsSoon} /> SFTP 传输覆盖同名文件前确认（关掉就是直接覆盖）</label>
-        <div class="srow">
-          <span class="lbl">SFTP 历史</span>
-          <input class="numin" type="number" min="3" max="30" step="1" value={prefSftpHist} aria-label="路径框历史目录条数"
-                 onchange={setSftpHist} />
-          <span class="unit">条（3~30）· 路径框 ▾ 里记多少个传过的目录</span>
-        </div>
-        <div class="srow">
-          <span class="lbl">SFTP 打开方式</span>
-          <select class="ctlsel" bind:value={prefSftpWindow} onchange={saveSettingsSoon}>
-            <option value="embedded">内嵌面板</option>
-            <option value="window">独立窗口</option>
-          </select>
-        </div>
-        <div class="srow">
-          <span class="lbl">SFTP 编辑器</span>
-          <input class="fontin" placeholder="默认（系统关联程序）" value={prefEditCmd}
-                 aria-label="SFTP 外部编辑器命令"
-                 onchange={(e) => { prefEditCmd = (e.target as HTMLInputElement).value; saveSettingsSoon(); }} />
-        </div>
-        <div class="hint">右键 SFTP 文件「编辑（文本）」会用此程序打开临时文件，保存后约 1-2 秒自动同步回远端。支持 <code>{'{file}'}</code> 占位符（留空则用系统默认程序），例如 <code>code --wait {'{file}'}</code>、<code>gedit {'{file}'}</code>。同步由应用轮询完成，不依赖编辑器是否阻塞。</div>
+          <div class="setmain" bind:this={setMainEl} onscroll={onSetScroll}>
+            <div class="sec" id="set-appearance">外观</div>
+            <div class="srow">
+              <span class="lbl">字号</span>
+              <button onclick={() => setFont(fontSize - 1)}>−</button>
+              <span class="num">{fontSize}</span>
+              <button onclick={() => setFont(fontSize + 1)}>＋</button>
+            </div>
+            <div class="srow">
+              <span class="lbl">字体</span>
+              <input class="fontin" list="fontlist" placeholder="默认（留空）" value={fontFamily}
+                     aria-label="终端字体"
+                     onchange={(e) => setFontFamily((e.target as HTMLInputElement).value)} />
+              <datalist id="fontlist">
+                {#each (fontList ?? []) as f (f)}<option value={f}></option>{/each}
+              </datalist>
+            </div>
+            <div class="srow">
+              <span class="lbl">配色</span>
+              <select class="ctlsel" bind:value={prefPalette} onchange={saveSettingsSoon}>
+                {#each Object.entries(PALETTE_LABELS) as [key, label] (key)}
+                  <option value={key}>{label}</option>
+                {/each}
+              </select>
+            </div>
+            <div class="srow">
+              <span class="lbl">增亮</span>
+              <select class="ctlsel" bind:value={prefBright} onchange={saveSettingsSoon}>
+                <option value={0}>关</option>
+                <option value={1}>弱（γ1.15）</option>
+                <option value={2}>中（γ1.3）</option>
+                <option value={3}>强（γ1.5）</option>
+              </select>
+            </div>
+            <div class="hint">配色换的是那 16 个 ANSI 色（含背景）；程序自己写死的真彩不走这张表。字体需系统已安装（如 MesloLGS NF），可直接输入名称。改动即时生效并保存。</div>
+            <label class="ck"><input type="checkbox" bind:checked={prefSoftwareRender} onchange={saveSettingsSoon} /> 软件渲染</label>
+            <div class="hint">不用 GPU 加速渲染终端。Windows 上出现花屏、文字丢失时开启可恢复；已开与新建终端即时生效，代价是极端滚动性能略降。</div>
 
-        <div class="sec">安全</div>
-        <div class="srow">
-          <span class="lbl">启动密码</span>
-          {#if vaultEnabled}
-            <span class="unit">已启用 · 启动时需登录</span>
-            <button onclick={changeVaultPw}>修改</button>
-            <button onclick={disableVault}>关闭</button>
-          {:else}
-            <span class="unit">未启用 · 保存的密码为明文</span>
-            <button onclick={enableVault}>启用</button>
-          {/if}
-        </div>
-        <div class="hint">启用后，服务器密码用启动密码经 Argon2id 派生出的密钥加密存放（AES-256-GCM），启动密码本身不落盘；每次打开 lterm 都要输入一次。忘记启动密码将无法恢复已保存的密码。</div>
+            <div class="sec" id="set-behavior">行为</div>
+            <label class="ck"><input type="checkbox" bind:checked={prefCopyOnSelect} onchange={saveSettingsSoon} /> 选中即复制</label>
+            <label class="ck"><input type="checkbox" bind:checked={prefConfirmMultiLine} onchange={saveSettingsSoon} /> 多行粘贴确认</label>
+            <label class="ck"><input type="checkbox" bind:checked={prefContextMenu} onchange={saveSettingsSoon} /> 右键菜单（复制/粘贴/克隆；关闭则右键=复制/粘贴）</label>
+            <label class="ck"><input type="checkbox" bind:checked={prefConfirmClose} onchange={saveSettingsSoon} /> 关闭在线会话时确认（只影响标签页；窗口上还有连接时，退出总归会问一次）</label>
+            <label class="ck"><input type="checkbox" bind:checked={prefCompactList} onchange={saveSettingsSoon} /> 服务器列表紧凑模式（每行只显示标题，编辑/复制/删除走右键菜单）</label>
+            <label class="ck"><input type="checkbox" bind:checked={prefConfirmSftpDelete} onchange={saveSettingsSoon} /> SFTP 面板删除文件前确认（多选只问一次；关掉连目录也不问）</label>
+            <label class="ck"><input type="checkbox" bind:checked={prefConfirmSftpOverwrite} onchange={saveSettingsSoon} /> SFTP 传输覆盖同名文件前确认（关掉就是直接覆盖）</label>
+            <div class="srow">
+              <span class="lbl">SFTP 历史</span>
+              <input class="numin" type="number" min="3" max="30" step="1" value={prefSftpHist} aria-label="路径框历史目录条数"
+                     onchange={setSftpHist} />
+              <span class="unit">条（3~30）· 路径框 ▾ 里记多少个传过的目录</span>
+            </div>
+            <div class="srow">
+              <span class="lbl">SFTP 打开方式</span>
+              <select class="ctlsel" bind:value={prefSftpWindow} onchange={saveSettingsSoon}>
+                <option value="embedded">内嵌面板</option>
+                <option value="window">独立窗口</option>
+              </select>
+            </div>
+            <div class="srow">
+              <span class="lbl">SFTP 编辑器</span>
+              <input class="fontin" placeholder="默认（系统关联程序）" value={prefEditCmd}
+                     aria-label="SFTP 外部编辑器命令"
+                     onchange={(e) => { prefEditCmd = (e.target as HTMLInputElement).value; saveSettingsSoon(); }} />
+            </div>
+            <div class="hint">右键 SFTP 文件「编辑（文本）」会用此程序打开临时文件，保存后约 1-2 秒自动同步回远端。支持 <code>{'{file}'}</code> 占位符（留空则用系统默认程序），例如 <code>code --wait {'{file}'}</code>、<code>gedit {'{file}'}</code>。同步由应用轮询完成，不依赖编辑器是否阻塞。</div>
 
-        <div class="sec">键盘</div>
-        <div class="srow">
-          <span class="lbl">Ctrl+Enter</span>
-          <select class="ctlsel" bind:value={prefCtrlEnter} onchange={saveSettingsSoon}>
-            <option value="newline">换行（发 Alt+Enter 的字节）</option>
-            <option value="csiu">换行（Kitty CSI-u 编码）</option>
-            <option value="same">不拦截（等同 Enter）</option>
-          </select>
-        </div>
-        <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
-        <label class="ck"><input type="checkbox" bind:checked={prefSwapCopyPaste} onchange={saveSettingsSoon} /> 反转 Ctrl+C/V 与 Ctrl+Shift+C/V（Ctrl+C 复制、Ctrl+V 粘贴）</label>
-        <div class="hint">反转后 Ctrl+Shift+C 直接给终端发 SIGINT（\x03），Ctrl+Shift+V 发 \x16；不再走应用复制/粘贴。</div>
+            <div class="sec" id="set-security">安全</div>
+            <div class="srow">
+              <span class="lbl">启动密码</span>
+              {#if vaultEnabled}
+                <span class="unit">已启用 · 启动时需登录</span>
+                <button onclick={changeVaultPw}>修改</button>
+                <button onclick={disableVault}>关闭</button>
+              {:else}
+                <span class="unit">未启用 · 保存的密码为明文</span>
+                <button onclick={enableVault}>启用</button>
+              {/if}
+            </div>
+            <div class="hint">启用后，服务器密码用启动密码经 Argon2id 派生出的密钥加密存放（AES-256-GCM），启动密码本身不落盘；每次打开 lterm 都要输入一次。忘记启动密码将无法恢复已保存的密码。</div>
 
-        <div class="sec">更新</div>
-        <div class="srow">
-          <span class="lbl">当前版本</span>
-          <span class="num ver">v{currentVersion || '…'}</span>
-          <button disabled={updateChecking} onclick={() => checkForUpdate(true)}>{updateChecking ? '检查中…' : '立即检查'}</button>
-          {#if skipUpdate}
-            <button onclick={unskipVersion}>恢复提醒（已忽略 v{skipUpdate}）</button>
-          {/if}
-        </div>
-        {#if updateMsg}<div class="supd">{updateMsg}</div>{/if}
-        <label class="ck"><input type="checkbox" bind:checked={prefCheckUpdate} onchange={saveSettingsSoon} /> 启动时自动检查新版本（只访问 linyong.tech 更新服务器，不发任何本机信息）</label>
+            <div class="sec" id="set-keys">键盘</div>
+            <div class="srow">
+              <span class="lbl">Ctrl+Enter</span>
+              <select class="ctlsel" bind:value={prefCtrlEnter} onchange={saveSettingsSoon}>
+                <option value="newline">换行（发 Alt+Enter 的字节）</option>
+                <option value="csiu">换行（Kitty CSI-u 编码）</option>
+                <option value="same">不拦截（等同 Enter）</option>
+              </select>
+            </div>
+            <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
+            <label class="ck"><input type="checkbox" bind:checked={prefSwapCopyPaste} onchange={saveSettingsSoon} /> 反转 Ctrl+C/V 与 Ctrl+Shift+C/V（Ctrl+C 复制、Ctrl+V 粘贴）</label>
+            <div class="hint">反转后 Ctrl+Shift+C 直接给终端发 SIGINT（\x03），Ctrl+Shift+V 发 \x16；不再走应用复制/粘贴。</div>
 
-        <div class="spath" title="设置、服务器列表、known_hosts 都存在这里">设置保存在：<code>{dataDir || '…'}</code></div>
+            <div class="sec" id="set-update">更新</div>
+            <div class="srow">
+              <span class="lbl">当前版本</span>
+              <span class="num ver">v{currentVersion || '…'}</span>
+              <button disabled={updateChecking} onclick={() => checkForUpdate(true)}>{updateChecking ? '检查中…' : '立即检查'}</button>
+              {#if skipUpdate}
+                <button onclick={unskipVersion}>恢复提醒（已忽略 v{skipUpdate}）</button>
+              {/if}
+            </div>
+            {#if updateMsg}<div class="supd">{updateMsg}</div>{/if}
+            <label class="ck"><input type="checkbox" bind:checked={prefCheckUpdate} onchange={saveSettingsSoon} /> 启动时自动检查新版本（只访问 linyong.tech 更新服务器，不发任何本机信息）</label>
+
+            <div class="spath" title="设置、服务器列表、known_hosts 都存在这里">设置保存在：<code>{dataDir || '…'}</code></div>
+          </div>
+        </div>
       </div>
     </div>
   {/if}
@@ -1821,7 +1885,7 @@
   .updatetoast .utsub { color: #9fc4e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .updatetoast .utact { padding: 2px 8px; white-space: nowrap; }
   .updatetoast .dismiss { color: #cfe4ff; }
-  .setdlg.upddlg { width: 560px; }
+  .setdlg.upddlg { width: 560px; overflow-y: auto; }
   .setdlg .updmeta { font-size: 12px; color: #9fc4e8; }
   .setdlg .updhint { padding: 6px 8px; font-size: 12px; color: #e6c07b; background: #3a2f1b; border: 1px solid #5c4a26; border-radius: 6px; }
   .setdlg .updnotes { margin: 0; max-height: 220px; overflow-y: auto; padding: 8px 10px; background: #1b1b1b; border: 1px solid #383838; border-radius: 6px;
@@ -1845,13 +1909,24 @@
   .icon { border: none; background: none; color: #666; cursor: pointer; padding: 0 6px; }
   .icon:hover { color: #8ab4f8; }
   .setmask { position: fixed; inset: 0; z-index: 56; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 24px 12px; }
-  .setdlg { width: 640px; max-width: 94vw; max-height: calc(100vh - 48px); overflow-y: auto; display: flex; flex-direction: column; gap: 9px;
+  .setdlg { width: 640px; max-width: 94vw; max-height: calc(100vh - 48px); display: flex; flex-direction: column; gap: 9px;
     padding: 14px 16px; background: #232323; border: 1px solid #444; border-radius: 10px; color: #ccc;
     box-shadow: 0 12px 40px rgba(0,0,0,.5); font-size: 13px; }
   .setdlg .shead { display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 14px; color: #ddd;
     padding-bottom: 8px; border-bottom: 1px solid #333; }
   .setdlg .shead .sclose { border: none; background: none; color: #999; font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
   .setdlg .shead .sclose:hover { background: #444; color: #fff; }
+  /* 设置弹窗：左侧分区导轨固定，右侧内容独立滚动 */
+  .setdlg > .setbody { display: flex; gap: 10px; flex: 1; min-height: 0; }
+  .setdlg .setnav { width: 88px; box-sizing: border-box; flex-shrink: 0; align-self: stretch; padding-right: 8px;
+    border-right: 1px solid #2a2a2a; display: flex; flex-direction: column; gap: 3px; }
+  .setdlg .setnavi { text-align: left; padding: 5px 8px; border-radius: 5px; border: 1px solid transparent;
+    background: none; color: #999; font-size: 12px; cursor: pointer; }
+  .setdlg .setnavi:hover { background: #2a2a2a; color: #ccc; }
+  .setdlg .setnavi.on { color: #8ab4f8; background: #2f2f2f; }
+  .setdlg .setmain { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px;
+    display: flex; flex-direction: column; gap: 9px; }
+  @media (max-width: 560px) { .setdlg .setnav { display: none; } }
   .setdlg .sec { margin-top: 6px; font-size: 12px; color: #8ab4f8; border-bottom: 1px solid #2f2f2f; padding-bottom: 3px; }
   .setdlg .srow { display: flex; gap: 8px; align-items: center; }
   .setdlg .lbl { width: 82px; flex-shrink: 0; color: #aaa; }
