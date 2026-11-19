@@ -174,6 +174,8 @@
   type Fwd = { local: number; host: string; port: number };
   let showFwd = $state(false);
   let forwards = $state<Fwd[]>([]);
+  // 按 profileId 记住的成功转发历史，形状与活动转发一致（Rust 侧 FwdRecord）
+  let fwdHist = $state<Fwd[]>([]);
   let fwdLocal = $state('');
   let fwdHost = $state('');
   let fwdRemote = $state('');
@@ -182,14 +184,19 @@
   async function refreshForwards() {
     try { forwards = await invoke<Fwd[]>('forward_list', { id: sessionId }); } catch { forwards = []; }
   }
+  async function loadFwdHist() {
+    try { fwdHist = await invoke<Fwd[]>('get_fwd_hist', { profileId }); } catch { fwdHist = []; }
+  }
   async function addForward() {
     fwdError = '';
-    const local = Number(fwdLocal), port = Number(fwdRemote);
-    if (!local || !port || !fwdHost.trim()) { fwdError = '请填写本地端口 / 目标主机 / 目标端口'; return; }
+    const local = Number(fwdLocal), port = Number(fwdRemote), host = fwdHost.trim();
+    if (!local || !port || !host) { fwdError = '请填写本地端口 / 目标主机 / 目标端口'; return; }
     try {
-      await invoke('forward_add', { id: sessionId, local, host: fwdHost.trim(), port });
+      await invoke('forward_add', { id: sessionId, local, host, port });
+      await invoke('note_fwd', { profileId, local, host, port }).catch(() => {});
       fwdLocal = ''; fwdHost = ''; fwdRemote = '';
       await refreshForwards();
+      await loadFwdHist();
     } catch (e) { fwdError = String(e); }
   }
   async function delForward(local: number) {
@@ -197,7 +204,24 @@
     try { await invoke('forward_del', { id: sessionId, local }); } catch (e) { fwdError = String(e); }
     await refreshForwards();
   }
-  $effect(() => { if (showFwd) void refreshForwards(); });
+  // 历史条目直接重新建立转发，不预填表单
+  async function retune(h: Fwd) {
+    fwdError = '';
+    try {
+      await invoke('forward_add', { id: sessionId, local: h.local, host: h.host, port: h.port });
+      await invoke('note_fwd', { profileId, local: h.local, host: h.host, port: h.port }).catch(() => {});
+      await refreshForwards();
+      await loadFwdHist();
+    } catch (e) { fwdError = String(e); }
+  }
+  async function dropHist(h: Fwd) {
+    fwdError = '';
+    try {
+      await invoke('drop_fwd', { profileId, local: h.local, host: h.host, port: h.port });
+      await loadFwdHist();
+    } catch (e) { fwdError = String(e); }
+  }
+  $effect(() => { if (showFwd) { void refreshForwards(); void loadFwdHist(); } });
 
   // 配色/增亮改动即时作用到已开着的终端。
   // 不要在这里再手动 clearTextureAtlas()：xterm 的 WebGL 渲染器自己监听 option/theme 变化并重建图集，
@@ -573,6 +597,20 @@
           <li class="fwd-empty">暂无转发。把本机端口映射到远端可达的地址，等效 ssh -L；关闭标签自动停止。</li>
         {/each}
       </ul>
+      <div class="fwdhist">
+        <div class="fwh">历史记录（双击重新转发）</div>
+        {#if !fwdHist.length}<div class="fwnone">暂无历史</div>{/if}
+        {#each fwdHist as h (h.local + ':' + h.host + ':' + h.port)}
+          <div class="fwr" role="button" tabindex="0"
+               ondblclick={() => void retune(h)}
+               onkeydown={(e) => { if (e.key === 'Enter') void retune(h); }}
+               title="双击按此配置重新转发">
+            <span class="fwl">{h.local} → {h.host}:{h.port}</span>
+            <button onmousedown={noFocus} onclick={() => void retune(h)} title="重新转发" aria-label="重新转发">↺</button>
+            <button onmousedown={noFocus} onclick={() => void dropHist(h)} title="从历史移除" aria-label="从历史移除">×</button>
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
   <div class="tools-rail">
@@ -638,4 +676,14 @@
   .fwd-list li button { padding: 2px 10px; font-size: 11px; border-radius: 4px; border: 1px solid #444; background: #2a2a2a; color: #ccc; cursor: pointer; }
   .fwd-list li button:hover { color: #e57373; border-color: #e57373; }
   .fwd-empty { color: #666; font-size: 12px; padding: 10px; display: block; line-height: 1.6; border-bottom: none !important; }
+  /* 历史记录固定在面板底部：最多约 5 行，超出滚动，表头吸顶 */
+  .fwdhist { flex-shrink: 0; max-height: 156px; overflow-y: auto; border-top: 1px solid #2a2a2a; background: #141414; }
+  .fwh { position: sticky; top: 0; padding: 5px 10px; background: #141414; border-bottom: 1px solid #2a2a2a; color: #999; font-size: 12px; }
+  .fwnone { color: #666; font-size: 12px; padding: 6px 10px; }
+  .fwr { display: flex; align-items: center; gap: 6px; padding: 3px 10px; border-bottom: 1px solid #262626; cursor: pointer; }
+  .fwr:hover { background: #1d1d1d; }
+  .fwr:focus-visible { outline: 1px solid #8ab4f8; outline-offset: -1px; }
+  .fwl { flex: 1; min-width: 0; font-size: 12px; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fwr button { padding: 1px 7px; font-size: 11px; border-radius: 4px; border: 1px solid #444; background: #2a2a2a; color: #ccc; cursor: pointer; }
+  .fwr button:hover { color: #8ab4f8; border-color: #8ab4f8; }
 </style>

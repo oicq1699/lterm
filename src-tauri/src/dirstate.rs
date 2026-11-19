@@ -5,6 +5,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
 
+/// 一条曾经成功添加过的端口转发配置
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FwdRecord {
+    pub local: u16,
+    pub host: String,
+    pub port: u16,
+}
+
 #[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DirPair {
@@ -13,6 +22,8 @@ pub struct DirPair {
     /// 最近有上传/下载发生过的目录，最新在前
     pub local_hist: Vec<String>,
     pub remote_hist: Vec<String>,
+    /// 最近成功添加过的端口转发，最新在前
+    pub fwds: Vec<FwdRecord>,
 }
 
 pub struct DirState {
@@ -68,6 +79,22 @@ impl DirState {
         e.remote_hist.truncate(keep);
         self.persist()
     }
+
+    /// 记一笔成功添加过的转发：去重、最新在前、只留 8 条
+    pub fn push_fwd(&mut self, profile_id: &str, rec: FwdRecord) -> Result<(), String> {
+        let e = self.dirs.entry(profile_id.to_string()).or_default();
+        e.fwds.retain(|f| *f != rec);
+        e.fwds.insert(0, rec);
+        e.fwds.truncate(8);
+        self.persist()
+    }
+
+    /// 从历史里移除一条完全相同的转发配置
+    pub fn drop_fwd(&mut self, profile_id: &str, rec: &FwdRecord) -> Result<(), String> {
+        let e = self.dirs.entry(profile_id.to_string()).or_default();
+        e.fwds.retain(|f| f != rec);
+        self.persist()
+    }
 }
 
 #[tauri::command]
@@ -98,6 +125,36 @@ pub fn note_transfer_dirs(
     let keep = keep as usize;
     st.push_hist(&profile_id, false, &local, keep)?;
     st.push_hist(&profile_id, true, &remote, keep)
+}
+
+#[tauri::command]
+pub fn get_fwd_hist(store: State<'_, Mutex<DirState>>, profile_id: String) -> Vec<FwdRecord> {
+    store.lock().map(|st| st.get(&profile_id).fwds).unwrap_or_default()
+}
+
+/// 转发添加成功后记一笔历史，供下次登录直接重用
+#[tauri::command]
+pub fn note_fwd(
+    store: State<'_, Mutex<DirState>>,
+    profile_id: String,
+    local: u16,
+    host: String,
+    port: u16,
+) -> Result<(), String> {
+    let mut st = store.lock().map_err(|e| e.to_string())?;
+    st.push_fwd(&profile_id, FwdRecord { local, host, port })
+}
+
+#[tauri::command]
+pub fn drop_fwd(
+    store: State<'_, Mutex<DirState>>,
+    profile_id: String,
+    local: u16,
+    host: String,
+    port: u16,
+) -> Result<(), String> {
+    let mut st = store.lock().map_err(|e| e.to_string())?;
+    st.drop_fwd(&profile_id, &FwdRecord { local, host, port })
 }
 
 #[cfg(test)]
@@ -143,6 +200,39 @@ mod tests {
         let legacy = DirState::load(&dir).unwrap();
         assert_eq!(legacy.get("old").local.as_deref(), Some("/tmp"));
         assert!(legacy.get("old").remote_hist.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_dirpair_without_fwds_loads() {
+        let legacy: DirPair = serde_json::from_str(
+            r#"{"local":null,"remote":null,"localHist":[],"remoteHist":[]}"#,
+        )
+        .unwrap();
+        assert!(legacy.fwds.is_empty(), "老 state.json 没有转发历史字段也要能加载");
+    }
+
+    #[test]
+    fn fwd_history_dedupes_orders_caps_and_drops() {
+        let dir = std::env::temp_dir().join(format!("lterm-dirstate-fwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rec = |local: u16, host: &str, port: u16| FwdRecord { local, host: host.into(), port };
+        let mut st = DirState::load(&dir).unwrap();
+        for i in 1..=10u16 {
+            st.push_fwd("p1", rec(i, "127.0.0.1", 3306)).unwrap();
+        }
+        st.push_fwd("p1", rec(3, "127.0.0.1", 3306)).unwrap(); // 复用旧配置要挪到最前
+        let reloaded = DirState::load(&dir).unwrap();
+        let hist = reloaded.get("p1").fwds;
+        assert_eq!(hist.len(), 8, "只留 8 条");
+        assert_eq!(hist[0], rec(3, "127.0.0.1", 3306), "最近用过的在最前");
+        assert_eq!(hist[1], rec(10, "127.0.0.1", 3306));
+
+        st.push_fwd("p1", rec(9, "10.0.0.2", 8080)).unwrap();
+        st.drop_fwd("p1", &rec(9, "10.0.0.2", 8080)).unwrap();
+        let dropped = DirState::load(&dir).unwrap();
+        assert!(!dropped.get("p1").fwds.contains(&rec(9, "10.0.0.2", 8080)), "精确三元组被移除");
+        assert!(dropped.get("p2").fwds.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 }
