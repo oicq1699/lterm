@@ -959,8 +959,7 @@
       }
     } else if (e.ctrlKey && e.key.toLowerCase() === 'b') {
       e.preventDefault();
-      showAside = !showAside;
-      saveSettingsSoon();
+      toggleAside(!showAside);
     } else if (e.ctrlKey && e.key.toLowerCase() === 'w') {
       if (activeIdx >= 0) { e.preventDefault(); closeTab(activeIdx); }
     }
@@ -1107,6 +1106,9 @@
 
   function toggleAside(v: boolean) {
     showAside = v;
+    // 列表显隐会改变终端容器宽度，DOM 更新后必须重新 fit，否则终端不会跟着扩充/收缩
+    const t = activeTab;
+    if (t) requestAnimationFrame(() => fitFns.get(t.sid)?.());
     saveSettingsSoon();
   }
 
@@ -1909,7 +1911,7 @@
   .icon { border: none; background: none; color: #666; cursor: pointer; padding: 0 6px; }
   .icon:hover { color: #8ab4f8; }
   .setmask { position: fixed; inset: 0; z-index: 56; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 24px 12px; }
-  .setdlg { width: 640px; max-width: 94vw; max-height: calc(100vh - 48px); display: flex; flex-direction: column; gap: 9px;
+  .setdlg { width: 900px; max-width: 94vw; max-height: calc(100vh - 48px); display: flex; flex-direction: column; gap: 9px;
     padding: 14px 16px; background: #232323; border: 1px solid #444; border-radius: 10px; color: #ccc;
     box-shadow: 0 12px 40px rgba(0,0,0,.5); font-size: 13px; }
   .setdlg .shead { display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: 14px; color: #ddd;
