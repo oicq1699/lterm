@@ -362,3 +362,41 @@ async fn real_sftp_symlinked_dir_counts_as_dir() {
     let _ = remote_remove(&sftp, &dir, true).await;
     let _ = std::fs::remove_file(&tmp);
 }
+
+/// exit 关标签的协议前提：OpenSSH 退出时序是 Data → EOF → exit-status → Close，
+/// EOF 之后必须继续读，才能拿到 ExitStatus（session.rs 靠它判定正常退出）。
+#[tokio::test]
+async fn real_exit_status_after_eof() {
+    if enabled().is_none() {
+        return;
+    }
+    let mut handle = connect_real().await;
+    let channel = handle.channel_open_session().await.unwrap();
+    channel.request_pty(true, "xterm-256color", 80, 24, 0, 0, &[]).await.unwrap();
+    channel.request_shell(true).await.unwrap();
+    let (mut rx, tx) = channel.split();
+    tx.data_bytes(b"exit\r".to_vec()).await.unwrap();
+    let mut normal_exit = false;
+    let mut saw_eof_before_exit = false;
+    let done = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            match rx.wait().await {
+                Some(ChannelMsg::Eof) => {
+                    if !normal_exit {
+                        saw_eof_before_exit = true;
+                    }
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    assert_eq!(exit_status, 0, "exit 正常退出码应为 0");
+                    normal_exit = true;
+                }
+                Some(ChannelMsg::Close) | None => break,
+                Some(_) => {}
+            }
+        }
+    })
+    .await;
+    assert!(done.is_ok(), "等待通道关闭超时");
+    assert!(saw_eof_before_exit, "真实 OpenSSH 应在 exit-status 之前先发 EOF");
+    assert!(normal_exit, "EOF 之后必须还能读到 ExitStatus，否则 exit 不会自动关标签");
+}

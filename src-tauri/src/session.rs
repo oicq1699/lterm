@@ -218,7 +218,8 @@ pub async fn connect(
         let mut ticker = tokio::time::interval(Duration::from_millis(COALESCE_MS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut reason = String::from("连接中断");
-        // 远端 shell 正常退出时服务器会先发 ExitStatus 再发 Eof；只认 ExitStatus，掉线等异常仍保留标签
+        // 远端 shell 正常退出时 OpenSSH 的顺序是 Data → EOF → exit-status → Close（见 RFC 4254；EOF 只是半关通知）。
+        // 所以 EOF 不能提前跳出，否则后面的 ExitStatus 读不到，exit 就不会自动关标签。掉线等异常仍保留标签。
         let mut normal_exit = false;
         let mut forwards: HashMap<u16, (oneshot::Sender<()>, ForwardInfo)> = HashMap::new();
         loop {
@@ -291,7 +292,8 @@ pub async fn connect(
                         }
                     }
                     Some(ChannelMsg::ExitStatus { .. }) => normal_exit = true,
-                    Some(ChannelMsg::Eof | ChannelMsg::Close) => { reason = "远端关闭了连接".into(); break; }
+                    Some(ChannelMsg::Eof) => {}
+                    Some(ChannelMsg::Close) => { reason = "远端关闭了连接".into(); break; }
                     Some(_) => {}
                     None => { reason = "远端关闭了连接".into(); break; }
                 },
