@@ -6,6 +6,7 @@ pub mod fuzzy;
 pub mod hostkeys;
 pub mod jump;
 pub mod keyfile;
+pub mod local;
 pub mod rdp;
 pub mod secrets;
 pub mod session;
@@ -164,6 +165,7 @@ pub fn run() {
             fuzzy::search_servers,
             fonts::list_fonts,
             session::connect,
+            local::local_open,
             session::write_input,
             session::resize,
             session::disconnect,

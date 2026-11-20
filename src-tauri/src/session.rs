@@ -131,19 +131,27 @@ impl Registry {
     pub fn live_count(&self) -> usize {
         self.entries.len()
     }
+
+    pub(crate) fn attach(&mut self, id: String, tx: mpsc::UnboundedSender<SessionCmd>) {
+        self.entries.insert(id, tx);
+    }
+
+    pub(crate) fn detach(&mut self, id: &str) {
+        self.entries.remove(id);
+    }
 }
 
 #[derive(Clone, Serialize)]
-struct OutputPayload {
-    id: String,
-    data: String,
+pub(crate) struct OutputPayload {
+    pub(crate) id: String,
+    pub(crate) data: String,
 }
 
 #[derive(Clone, Serialize)]
-struct ClosedPayload {
-    id: String,
-    reason: String,
-    normal_exit: bool,
+pub(crate) struct ClosedPayload {
+    pub(crate) id: String,
+    pub(crate) reason: String,
+    pub(crate) normal_exit: bool,
 }
 
 const COALESCE_MS: u64 = 8;

@@ -26,7 +26,7 @@
     created_at: number; updated_at: number;
   };
   type Hit = { server: Profile; score: number };
-  type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null; passwords: Record<string, string>; title?: string };
+  type Tab = { sid: string; profile: Profile; alive: boolean; password: string | null; passwords: Record<string, string>; title?: string; local?: boolean };
 
   let servers: Profile[] = $state([]);
   let folders: string[] = $state([]);
@@ -761,6 +761,32 @@
 
   const isWindowsUA = /Windows/i.test(navigator.userAgent);
 
+  // 本地终端：合成本地 shell 的会话，profile 只为复用 Tab 结构（名字/状态栏都按 local 分支走）
+  function localProfile(i: number): Profile {
+    const name = i > 1 ? `本地终端 ${i}` : '本地终端';
+    return {
+      id: 'local', name, host: '127.0.0.1', port: 0, username: 'local',
+      auth_method: 'key', protocol: 'ssh', rdp: emptyRdp(),
+      icon: null, key_path: null, remark: '', group_tag: null, proxy_jump: null,
+      created_at: 0, updated_at: 0,
+    };
+  }
+
+  async function newLocalTab() {
+    error = '';
+    const n = tabs.filter((t) => t.local).length + 1;
+    const { cols, rows } = estimateSize();
+    try {
+      const sid = await invoke<string>('local_open', { cols, rows });
+      tabs = [...tabs, { sid, profile: localProfile(n), alive: true, password: null, passwords: {}, local: true }];
+      activeIdx = tabs.length - 1;
+      flushNotices();
+      focusActive();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   async function connectRdp(p: Profile) {
     // Windows 上 mstsc 自己弹凭据框（微软没有提供命令行传密码的途径），这里不多问一次；
     // Linux 上把密码经管道交给 xfreerdp 的 /from-stdin，不进 argv，也不写盘。
@@ -797,7 +823,8 @@
     if (!t) return;
     // 下标即将变动，先把未提交的改名落到当前标签上，免得改到隔壁
     if (renamingIdx >= 0) commitRename();
-    if (t.alive && prefConfirmClose && !confirm(`断开 ${t.profile.username}@${t.profile.host}？传输中的任务会一起中断。`)) return;
+    const ask = t.local ? '关闭本地终端？其中运行的程序会被一起终止。' : `断开 ${t.profile.username}@${t.profile.host}？传输中的任务会一起中断。`;
+    if (t.alive && prefConfirmClose && !confirm(ask)) return;
     if (t.alive) {
       try { await invoke('disconnect', { id: t.sid }); } catch { /* 已断开 */ }
     }
@@ -957,6 +984,9 @@
       if (tabs.length > 1) {
         activeIdx = (activeIdx + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
       }
+    } else if (e.ctrlKey && e.key.toLowerCase() === 't') {
+      e.preventDefault();
+      void newLocalTab();
     } else if (e.ctrlKey && e.key.toLowerCase() === 'b') {
       e.preventDefault();
       toggleAside(!showAside);
@@ -1267,9 +1297,7 @@
                   onclick={(e) => { e.stopPropagation(); closeTab(i); }}>×</button>
         </div>
       {/each}
-      {#if tabs.length}
-        <button class="tab newtab" onclick={() => { query = ''; document.querySelector<HTMLInputElement>('.search')?.focus(); }} title="从列表选择服务器新建会话">＋</button>
-      {/if}
+      <button class="tab newtab" onclick={newLocalTab} title="新建本地终端 (Ctrl+T)">＋</button>
     </div>
 
     <div class="panes" bind:this={paneEl}>
@@ -1277,7 +1305,7 @@
         <div class="welcome">
           <h2>lterm</h2>
           <p>左侧添加服务器，双击连接。支持 ssh-agent / 密钥 / 密码认证，RDP 主机交给系统远程桌面客户端。</p>
-          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · {prefSwapCopyPaste ? 'Ctrl+C/V 复制/粘贴，Ctrl+Shift+C 发 SIGINT' : 'Ctrl+Shift+C/V 复制/粘贴'} · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
+          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+T 本地终端 · Ctrl+F 搜索 · {prefSwapCopyPaste ? 'Ctrl+C/V 复制/粘贴，Ctrl+Shift+C 发 SIGINT' : 'Ctrl+Shift+C/V 复制/粘贴'} · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
         </div>
       {/if}
       {#each tabs as t, i (t.sid)}
@@ -1301,6 +1329,7 @@
                  prefCtrlEnter={prefCtrlEnter}
                  prefSwapCopyPaste={prefSwapCopyPaste}
                  prefSoftwareRender={prefSoftwareRender}
+                 isLocal={!!t.local}
                  onClone={() => activeTab && connect(activeTab.profile)}
                  onClosed={(normalExit) => onTabClosed(t.sid, normalExit)}
                  onFocusBack={focusActive}
@@ -1313,10 +1342,14 @@
     <div class="status">
       {#if activeTab}
         <span class="dot" class:connected={activeTab.alive} class:closed={!activeTab.alive}></span>
-        {activeTab.alive ? activeTab.profile.username + '@' + activeTab.profile.host : '会话已结束'}
-        {#if activeTab.alive}
-          <button onclick={() => closeTab(activeIdx)}>断开</button>
+        {#if activeTab.local}
+          {activeTab.alive ? activeTab.title || activeTab.profile.name : '本地终端已结束'}
         {:else}
+          {activeTab.alive ? activeTab.profile.username + '@' + activeTab.profile.host : '会话已结束'}
+        {/if}
+        {#if activeTab.alive}
+          <button onclick={() => closeTab(activeIdx)}>{activeTab.local ? '关闭' : '断开'}</button>
+        {:else if !activeTab.local}
           <button onclick={doReconnect}>重连 {activeTab.profile.name}</button>
         {/if}
       {:else}

@@ -51,6 +51,8 @@
     prefSwapCopyPaste: boolean;
     /** 软件渲染：不加载 WebGL 插件，走 xterm 自带 DOM 渲染器（Windows GPU 花屏/丢字时救急） */
     prefSoftwareRender?: boolean;
+    /** 本地终端会话：隐藏 SFTP/端口转发工具，禁克隆 */
+    isLocal?: boolean;
     onClosed: (normalExit: boolean) => void;
     onClone?: () => void;
     /** 面板收起/关闭时请求把焦点交还终端（xterm 输入框只能有一个持有者） */
@@ -65,7 +67,7 @@
     prefSftpWindow = 'embedded', profileName = '', sessionPasswords = {},
     prefConfirmSftpDelete = true, prefConfirmSftpOverwrite = false,
     prefCopyOnSelect, prefConfirmMultiLine,
-    prefContextMenu, prefCtrlEnter, prefSwapCopyPaste, prefSoftwareRender = false, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
+    prefContextMenu, prefCtrlEnter, prefSwapCopyPaste, prefSoftwareRender = false, isLocal = false, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
@@ -468,6 +470,8 @@
         if (e.shiftKey && k === 'v') { e.preventDefault(); pasteClipboard(); return false; }
       }
       if (!e.shiftKey && k === 'f') { e.preventDefault(); showSearch = true; return false; }
+      // Ctrl+T = 新建本地终端，由 window 层处理；这里挡下 \x14，免得漏进 shell 触发 transpose-chars
+      if (k === 't' && !e.shiftKey && !e.metaKey) { e.preventDefault(); return false; }
       if (k === '=' || k === '+') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 1 })); return false; }
       if (k === '-') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: -1 })); return false; }
       if (k === '0') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 999 })); return false; }
@@ -613,6 +617,7 @@
       </div>
     </div>
   {/if}
+  {#if !isLocal}
   <div class="tools-rail">
     <button class="ptool" class:open={showSftp && prefSftpWindow !== 'window'} onmousedown={noFocus}
             onclick={() => { if (prefSftpWindow === 'window') void openSftpWindow(); else showSftp = !showSftp; }}
@@ -620,11 +625,12 @@
             title={prefSftpWindow === 'window' ? 'SFTP 独立窗口' : '文件传输面板'}>📁</button>
     <button class="ptool" class:open={showFwd} onmousedown={noFocus} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
   </div>
+  {/if}
   {#if ctx}
     <div class="ctxmenu" bind:this={ctxEl} role="menu" style:left={`${ctx.x}px`} style:top={`${ctx.y}px`}>
       <button role="menuitem" class:off={!hasSel} onmousedown={noFocus} onclick={() => { if (hasSel) void copySelection(); closeCtx(); }}>复制</button>
       <button role="menuitem" onmousedown={noFocus} onclick={() => { void pasteClipboard(); closeCtx(); }}>粘贴</button>
-      {#if onClone}
+      {#if onClone && !isLocal}
         <button role="menuitem" onmousedown={noFocus} onclick={() => { onClone(); closeCtx(); }}>克隆此连接</button>
       {/if}
     </div>
