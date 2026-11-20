@@ -762,29 +762,50 @@
   const isWindowsUA = /Windows/i.test(navigator.userAgent);
 
   // 本地终端：合成本地 shell 的会话，profile 只为复用 Tab 结构（名字/状态栏都按 local 分支走）
-  function localProfile(i: number): Profile {
-    const name = i > 1 ? `本地终端 ${i}` : '本地终端';
+  let localHome = $state<string | null>(null);
+  function localName(d: number): string {
+    return d > 1 ? `本地终端 ${d}` : '本地终端';
+  }
+  // 标签名 = 目录 basename（与 Nemo 右键进来的语义对齐）；home 显示 ~，无目录回退计数名
+  function localTitle(cwd: string | null, d: number): string {
+    if (!cwd) return localName(d);
+    const sep = cwd.includes('\\') ? '\\' : '/';
+    if (localHome && (cwd === localHome || (cwd.startsWith(localHome + sep) && cwd.length > localHome.length))) {
+      return '~' + cwd.slice(localHome.length);
+    }
+    const seg = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+    return seg || cwd;
+  }
+  function localProfile(title: string): Profile {
     return {
-      id: 'local', name, host: '127.0.0.1', port: 0, username: 'local',
+      id: 'local', name: title, host: '127.0.0.1', port: 0, username: 'local',
       auth_method: 'key', protocol: 'ssh', rdp: emptyRdp(),
       icon: null, key_path: null, remark: '', group_tag: null, proxy_jump: null,
       created_at: 0, updated_at: 0,
     };
   }
 
-  async function newLocalTab() {
+  async function newLocalTab(cwd?: string | null) {
     error = '';
-    const n = tabs.filter((t) => t.local).length + 1;
     const { cols, rows } = estimateSize();
     try {
-      const sid = await invoke<string>('local_open', { cols, rows });
-      tabs = [...tabs, { sid, profile: localProfile(n), alive: true, password: null, passwords: {}, local: true }];
+      const sid = await invoke<string>('local_open', { cols, rows, cwd: cwd ?? null });
+      const title = localTitle(cwd ?? null, tabs.filter((t) => t.local).length + 1);
+      tabs = [...tabs, { sid, profile: localProfile(title), alive: true, password: null, passwords: {}, local: true }];
       activeIdx = tabs.length - 1;
       flushNotices();
       focusActive();
     } catch (e) {
       error = String(e);
     }
+  }
+
+  // 右键进来的目录排在 Rust 信箱里（门铃=事件、信件=take_startup_dirs）；
+  // 门铃可能比前端挂载先到，所以挂载后也要主动收一次
+  async function drainStartupDirs() {
+    let dirs: string[] = [];
+    try { dirs = await invoke<string[]>('take_startup_dirs'); } catch { return; }
+    for (const d of dirs) await newLocalTab(d);
   }
 
   async function connectRdp(p: Profile) {
@@ -1060,6 +1081,9 @@
       skipUpdate = s.skipUpdate ?? '';
     } catch { /* 用默认值 */ }
     settingsLoaded = true;
+    void invoke<string>('local_home').then((h) => { localHome = h; }).catch(() => {});
+    unlistenAll.push(await listen('open-local-tab', () => void drainStartupDirs()));
+    void drainStartupDirs();
     void invoke<{ current: string }>('update_feed').then((f) => { currentVersion = f.current; }).catch(() => {});
     // 安装形态取不到时按未知处理：页面照常用，只是自动更新会走运行时错误兜底
     try {
@@ -1297,7 +1321,7 @@
                   onclick={(e) => { e.stopPropagation(); closeTab(i); }}>×</button>
         </div>
       {/each}
-      <button class="tab newtab" onclick={newLocalTab} title="新建本地终端 (Ctrl+T)">＋</button>
+      <button class="tab newtab" onclick={() => void newLocalTab()} title="新建本地终端 (Ctrl+T)">＋</button>
     </div>
 
     <div class="panes" bind:this={paneEl}>

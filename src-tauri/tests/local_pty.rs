@@ -50,6 +50,25 @@ fn pty_exit_code_semantics() {
 
 #[cfg(unix)]
 #[test]
+fn pty_spawn_in_given_cwd() {
+    // Nemo 右键传目录的核心前提：CommandBuilder::cwd 决定 shell 的 $PWD
+    let target = std::env::temp_dir();
+    let pair = native_pty_system().openpty(pty_size()).expect("openpty");
+    let mut cmd = CommandBuilder::new("/bin/sh");
+    cmd.arg("-c");
+    cmd.arg("pwd; exit");
+    cmd.cwd(&target);
+    let mut child = pair.slave.spawn_command(cmd).expect("spawn");
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().expect("reader");
+    let out = String::from_utf8_lossy(&read_until_eof(reader)).replace("\r\n", "\n");
+    let want = std::fs::canonicalize(&target).unwrap().to_string_lossy().into_owned();
+    assert!(out.contains(&want), "shell 应在指定目录里起，pwd 输出: {out:?}");
+    assert!(child.wait().expect("wait").success());
+}
+
+#[cfg(unix)]
+#[test]
 fn pty_login_shell_roundtrip() {
     let pair = native_pty_system().openpty(pty_size()).expect("openpty");
     let mut cmd = CommandBuilder::new_default_prog();

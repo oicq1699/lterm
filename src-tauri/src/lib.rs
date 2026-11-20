@@ -125,6 +125,10 @@ pub fn run() {
     }));
 
     tauri::Builder::default()
+        // 插件按注册顺序执行，single-instance 必须排第一：二次实例要在其他插件跑起来之前被拦掉
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            local::on_second_instance(app, &argv);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -137,6 +141,11 @@ pub fn run() {
             app.manage(Mutex::new(store));
             app.manage(Mutex::new(secrets::SecretStore::load(&dir)?));
             app.manage(Mutex::new(session::Registry::default()));
+            let startup = local::StartupDir::default();
+            for d in local::dir_from_args(std::env::args()) {
+                startup.push(d);
+            }
+            app.manage(startup);
             let host_keys = hostkeys::HostKeys::load(&dir)?;
             app.manage(Arc::new(Mutex::new(host_keys)));
             app.manage(Mutex::new(sftp::SftpRegistry::default()));
@@ -166,6 +175,7 @@ pub fn run() {
             fonts::list_fonts,
             session::connect,
             local::local_open,
+            local::take_startup_dirs,
             session::write_input,
             session::resize,
             session::disconnect,
