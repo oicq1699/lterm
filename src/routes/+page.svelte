@@ -1005,9 +1005,6 @@
       if (tabs.length > 1) {
         activeIdx = (activeIdx + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
       }
-    } else if (e.ctrlKey && e.key.toLowerCase() === 't') {
-      e.preventDefault();
-      void newLocalTab();
     } else if (e.ctrlKey && e.key.toLowerCase() === 'b') {
       e.preventDefault();
       toggleAside(!showAside);
@@ -1321,7 +1318,7 @@
                   onclick={(e) => { e.stopPropagation(); closeTab(i); }}>×</button>
         </div>
       {/each}
-      <button class="tab newtab" onclick={() => void newLocalTab()} title="新建本地终端 (Ctrl+T)">＋</button>
+      <button class="tab newtab" onclick={() => void newLocalTab()} title="新建本地终端">＋</button>
     </div>
 
     <div class="panes" bind:this={paneEl}>
@@ -1329,7 +1326,7 @@
         <div class="welcome">
           <h2>lterm</h2>
           <p>左侧添加服务器，双击连接。支持 ssh-agent / 密钥 / 密码认证，RDP 主机交给系统远程桌面客户端。</p>
-          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+T 本地终端 · Ctrl+F 搜索 · {prefSwapCopyPaste ? 'Ctrl+C/V 复制/粘贴，Ctrl+Shift+C 发 SIGINT' : 'Ctrl+Shift+C/V 复制/粘贴'} · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
+          <p class="kbd">Ctrl+Tab 切换标签 · Ctrl+F 搜索 · {prefSwapCopyPaste ? 'Ctrl+C/V 复制/粘贴，Ctrl+Shift+C 发 SIGINT' : 'Ctrl+Shift+C/V 复制/粘贴'} · Ctrl+W 关闭标签 · 右键菜单（可在设置中改为直接复制/粘贴）</p>
         </div>
       {/if}
       {#each tabs as t, i (t.sid)}

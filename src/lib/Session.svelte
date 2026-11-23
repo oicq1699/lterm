@@ -470,8 +470,6 @@
         if (e.shiftKey && k === 'v') { e.preventDefault(); pasteClipboard(); return false; }
       }
       if (!e.shiftKey && k === 'f') { e.preventDefault(); showSearch = true; return false; }
-      // Ctrl+T = 新建本地终端，由 window 层处理；这里挡下 \x14，免得漏进 shell 触发 transpose-chars
-      if (k === 't' && !e.shiftKey && !e.metaKey) { e.preventDefault(); return false; }
       if (k === '=' || k === '+') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 1 })); return false; }
       if (k === '-') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: -1 })); return false; }
       if (k === '0') { e.preventDefault(); window.dispatchEvent(new CustomEvent('lterm-zoom', { detail: 999 })); return false; }
