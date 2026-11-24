@@ -5,8 +5,9 @@
 //! 路径支持 ~ 写法，用来验证展开逻辑）。
 
 use lterm_lib::auth;
-use lterm_lib::sftp::{download_core, download_tree, remote_list, remote_remove, upload_core, upload_tree};
+use lterm_lib::sftp::{download_core, download_tree, preview_core, remote_list, remote_remove, upload_core, upload_tree};
 use lterm_lib::store::{AuthMethod, ServerProfile};
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use russh::client;
 use russh::keys::PublicKeyOrCertificate;
 use russh::ChannelMsg;
@@ -124,6 +125,83 @@ async fn real_sftp_full_cycle() {
 
     tokio::fs::remove_file(&tmp).await.ok();
     tokio::fs::remove_file(&back).await.ok();
+}
+
+#[tokio::test]
+async fn real_sftp_preview_text_and_image() {
+    if enabled().is_none() {
+        return;
+    }
+    let mut handle = connect_real().await;
+    let sftp = open_sftp(&mut handle).await;
+
+    let home = sftp.canonicalize(".").await.unwrap();
+    let dir = format!("{home}/lterm_preview_test");
+    let _ = remote_remove(&sftp, &dir, true).await;
+    sftp.create_dir(&dir).await.unwrap();
+
+    let tmp = std::env::temp_dir().join(format!("lterm-preview-{}", std::process::id()));
+    tokio::fs::create_dir_all(&tmp).await.unwrap();
+
+    async fn put(sftp: &SftpSession, tmp: &std::path::Path, dir: &str, name: &str, data: &[u8]) -> String {
+        let local = tmp.join(name);
+        tokio::fs::write(&local, data).await.unwrap();
+        let remote = format!("{dir}/{name}");
+        upload_core(sftp, &local.to_string_lossy(), &remote, None, &mut |_, _| {})
+            .await
+            .unwrap();
+        remote
+    }
+
+    // 文本按原字节 base64 返回，前端再解码；截断标记只在大文件出现
+    let text = "fn main() {\n    println!(\"你好\");\n}\n";
+    let remote = put(&sftp, &tmp, &dir, "main.rs", text.as_bytes()).await;
+    let p = preview_core(&sftp, &remote).await.unwrap();
+    assert_eq!(p.kind, "text");
+    assert!(!p.truncated);
+    assert_eq!(p.size, Some(text.len() as u64));
+    assert_eq!(B64.decode(&p.data).unwrap(), text.as_bytes());
+
+    // NUL 字节判为二进制，不再把内容塞回前端
+    let remote = put(&sftp, &tmp, &dir, "blob.bin", b"abc\0def").await;
+    let p = preview_core(&sftp, &remote).await.unwrap();
+    assert_eq!(p.kind, "binary");
+    assert!(p.data.is_empty());
+
+    // 图片按魔数识别，不依赖扩展名
+    let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+    let remote = put(&sftp, &tmp, &dir, "pic.dat", &png).await;
+    let p = preview_core(&sftp, &remote).await.unwrap();
+    assert_eq!(p.kind, "image");
+    assert_eq!(p.mime.as_deref(), Some("image/png"));
+    assert_eq!(B64.decode(&p.data).unwrap(), png);
+
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#.to_vec();
+    let remote = put(&sftp, &tmp, &dir, "logo.svg", &svg).await;
+    let p = preview_core(&sftp, &remote).await.unwrap();
+    assert_eq!(p.kind, "image");
+    assert_eq!(p.mime.as_deref(), Some("image/svg+xml"));
+
+    // UTF-16LE BOM 文本不应被 NUL 判成二进制
+    let mut utf16 = vec![0xff, 0xfe];
+    for u in "hi".encode_utf16() {
+        utf16.extend_from_slice(&u.to_le_bytes());
+    }
+    let remote = put(&sftp, &tmp, &dir, "u16.txt", &utf16).await;
+    let p = preview_core(&sftp, &remote).await.unwrap();
+    assert_eq!(p.kind, "text");
+    assert_eq!(p.encoding_hint.as_deref(), Some("utf-16le"));
+
+    // 超过 1 MiB 的文本只回前 1 MiB，并标记截断
+    let big = "a".repeat(1024 * 1024 + 10);
+    let remote = put(&sftp, &tmp, &dir, "big.log", big.as_bytes()).await;
+    let p = preview_core(&sftp, &remote).await.unwrap();
+    assert_eq!(p.kind, "text");
+    assert!(p.truncated);
+    assert_eq!(B64.decode(&p.data).unwrap().len(), 1024 * 1024);
+
+    remote_remove(&sftp, &dir, true).await.unwrap();
+    tokio::fs::remove_dir_all(&tmp).await.ok();
 }
 
 #[tokio::test]

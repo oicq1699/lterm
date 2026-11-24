@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -10,8 +11,29 @@ use tokio::sync::{mpsc, oneshot};
 
 /// 编辑会话：远端文件下载到本地临时目录，外部编辑器改动后轮询 + sha256 自动回传。
 const MAX_EDIT_BYTES: u64 = 4 * 1024 * 1024;
+/// 文本预览最多读 1 MiB；超出部分截断，前端提示「仅显示前 1 MiB」。
+const PREVIEW_TEXT_BYTES: u64 = 1024 * 1024;
+/// 图片预览上限 8 MiB：base64 后经 IPC 体积约 10.7 MB，再大不划算。
+const PREVIEW_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// 头部嗅探长度：用于图片魔数、NUL 二进制判定与 BOM 识别。
+const PREVIEW_SNIFF_BYTES: usize = 8192;
 const EDIT_STATUS_EVENT: &str = "sftp-edit-status";
 const DISCONNECTED_MSG: &str = "SFTP 连接已断开";
+
+#[derive(Clone, Serialize)]
+pub struct PreviewPayload {
+    /// text | image | binary | too_large
+    pub kind: String,
+    /// 文本/图片字节的 base64；binary/too_large 为空
+    pub data: String,
+    pub mime: Option<String>,
+    pub size: Option<u64>,
+    pub mtime: u64,
+    pub mode: Option<u32>,
+    pub truncated: bool,
+    /// 检测到 UTF-16 BOM 时给出 utf-16le / utf-16be，前端据此解码
+    pub encoding_hint: Option<String>,
+}
 
 #[derive(Clone, Serialize)]
 pub struct EditInfo {
@@ -184,6 +206,10 @@ pub enum SftpJob {
         expect_size: u64,
         reply: oneshot::Sender<Result<EditUploadOutcome, String>>,
     },
+    Preview {
+        path: String,
+        reply: oneshot::Sender<Result<PreviewPayload, String>>,
+    },
 }
 
 #[derive(Default)]
@@ -307,6 +333,12 @@ pub fn spawn_worker(
                     let sftp = sftp.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = reply.send(edit_upload(&sftp, &remote, &local, force, expect_mtime, expect_size).await);
+                    });
+                }
+                SftpJob::Preview { path, reply } => {
+                    let sftp = sftp.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reply.send(preview_core(&sftp, &path).await);
                     });
                 }
                 SftpJob::Cancel { transfer_id } => {
@@ -694,6 +726,174 @@ async fn download_one(app: &AppHandle, sftp: &SftpSession, remote: &str, local: 
     }
 }
 
+// ---------- 远端文件预览 ----------
+
+fn ext_lower(path: &str) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => ext.to_ascii_lowercase(),
+        _ => String::new(),
+    }
+}
+
+fn bom_encoding(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(&[0xff, 0xfe]) {
+        Some("utf-16le")
+    } else if head.starts_with(&[0xfe, 0xff]) {
+        Some("utf-16be")
+    } else {
+        None
+    }
+}
+
+/// 图片识别以魔数为准；扩展名只在魔数较弱（BMP/SVG）时作辅助。
+fn image_mime(path: &str, head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return Some("image/png");
+    }
+    if head.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("image/jpeg");
+    }
+    if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if head.len() >= 12 && &head[0..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if head.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        return Some("image/x-icon");
+    }
+    if head.len() >= 12 && &head[4..8] == b"ftyp" {
+        let brand = &head[8..12];
+        if brand == b"avif" || brand == b"avis" {
+            return Some("image/avif");
+        }
+    }
+    let ext = ext_lower(path);
+    // "BM" 只有两字节，纯文本也可能以它开头，必须扩展名同时是 bmp
+    if ext == "bmp" && head.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    if ext == "svg" {
+        let body = if head.starts_with(&[0xef, 0xbb, 0xbf]) { &head[3..] } else { head };
+        if body.first() == Some(&b'<') {
+            return Some("image/svg+xml");
+        }
+    }
+    None
+}
+
+fn looks_binary(head: &[u8]) -> bool {
+    // UTF-16 文本天然含 NUL，先看 BOM
+    if bom_encoding(head).is_some() {
+        return false;
+    }
+    head.contains(&0u8)
+}
+
+/// 截断可能切在多字节 UTF-8 中间；回退到最后一个完整字符边界。
+fn trim_incomplete_utf8(buf: &mut Vec<u8>) {
+    if let Err(e) = std::str::from_utf8(buf) {
+        if e.error_len().is_none() {
+            buf.truncate(e.valid_up_to());
+        }
+    }
+}
+
+/// 把剩余内容读进 `buf`，总长不超过 `limit`；返回是否还有更多数据。
+async fn read_up_to(
+    mut rf: russh_sftp::client::fs::File,
+    buf: &mut Vec<u8>,
+    limit: u64,
+) -> Result<bool, String> {
+    if buf.len() as u64 > limit {
+        buf.truncate(limit as usize);
+        return Ok(true);
+    }
+    let remaining = limit + 1 - buf.len() as u64;
+    let mut t = rf.take(remaining);
+    t.read_to_end(buf).await.map_err(|e| format!("远端读取失败: {e}"))?;
+    if buf.len() as u64 > limit {
+        buf.truncate(limit as usize);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn preview_payload(
+    kind: &str,
+    data: Vec<u8>,
+    mime: Option<&str>,
+    size: Option<u64>,
+    mtime: u64,
+    mode: Option<u32>,
+    truncated: bool,
+    encoding_hint: Option<&str>,
+) -> PreviewPayload {
+    PreviewPayload {
+        kind: kind.to_string(),
+        data: if data.is_empty() { String::new() } else { B64.encode(data) },
+        mime: mime.map(str::to_string),
+        size,
+        mtime,
+        mode,
+        truncated,
+        encoding_hint: encoding_hint.map(str::to_string),
+    }
+}
+
+pub async fn preview_core(sftp: &SftpSession, path: &str) -> Result<PreviewPayload, String> {
+    let meta = sftp.metadata(path).await.map_err(|e| format!("远端 stat 失败: {e}"))?;
+    if meta.is_dir() {
+        return Err("目录不能预览".to_string());
+    }
+    let size = meta.size;
+    let mtime = meta.mtime.unwrap_or(0) as u64;
+    let mode = meta.permissions.map(|p| p & 0o7777);
+    let mut rf = sftp.open(path).await.map_err(|e| format!("打开远端文件失败: {e}"))?;
+
+    let mut head = vec![0u8; PREVIEW_SNIFF_BYTES];
+    let mut n = 0usize;
+    while n < PREVIEW_SNIFF_BYTES {
+        let read = rf.read(&mut head[n..]).await.map_err(|e| format!("远端读取失败: {e}"))?;
+        if read == 0 {
+            break;
+        }
+        n += read;
+    }
+    head.truncate(n);
+
+    if let Some(mime) = image_mime(path, &head) {
+        if size.map(|s| s > PREVIEW_IMAGE_BYTES).unwrap_or(false) {
+            return Ok(preview_payload("too_large", Vec::new(), None, size, mtime, mode, false, None));
+        }
+        let mut data = head;
+        if read_up_to(rf, &mut data, PREVIEW_IMAGE_BYTES).await? {
+            return Ok(preview_payload("too_large", Vec::new(), None, size, mtime, mode, false, None));
+        }
+        return Ok(preview_payload("image", data, Some(mime), size, mtime, mode, false, None));
+    }
+
+    if looks_binary(&head) {
+        return Ok(preview_payload("binary", Vec::new(), None, size, mtime, mode, false, None));
+    }
+
+    let hint = bom_encoding(&head);
+    let mut data = head;
+    let truncated = read_up_to(rf, &mut data, PREVIEW_TEXT_BYTES).await?;
+    if truncated {
+        if hint.is_some() {
+            if data.len() % 2 != 0 {
+                data.pop();
+            }
+        } else {
+            trim_incomplete_utf8(&mut data);
+        }
+    }
+    Ok(preview_payload("text", data, None, size, mtime, mode, truncated, hint))
+}
+
 // ---------- Tauri 命令 ----------
 
 fn job_tx(registry: &State<Mutex<SftpRegistry>>, sid: &str) -> Result<mpsc::UnboundedSender<SftpJob>, String> {
@@ -822,6 +1022,37 @@ pub async fn open_sftp_window(
     Ok(())
 }
 
+/// 打开/聚焦独立的远程文件浏览器窗口。与 SFTP 窗口（`sftp-{sid}`）互不共用。
+///
+/// 与 `open_sftp_window` 一样必须是 async，否则 Windows 上会死锁（wry #583）。
+#[tauri::command]
+pub async fn open_files_window(
+    app: AppHandle,
+    sid: String,
+    profile_id: String,
+    title: String,
+) -> Result<(), String> {
+    let label = format!("files-{sid}");
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let script = format!(
+        "window.__LTERM_FILES__ = {};",
+        serde_json::json!({"sid": sid, "profileId": profile_id})
+    );
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("files".into()))
+        .title(title)
+        .inner_size(1100.0, 760.0)
+        .min_inner_size(720.0, 480.0)
+        .initialization_script(script)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Clone, Serialize)]
 pub struct LocalEntry {
     pub name: String,
@@ -898,6 +1129,18 @@ pub async fn sftp_canonicalize(
     let (r, rx) = oneshot::channel();
     tx.send(SftpJob::Canonicalize { path, reply: r }).map_err(|_| "worker 已退出".to_string())?;
     rx.await.map_err(|_| "响应丢失".to_string())?
+}
+
+#[tauri::command]
+pub async fn sftp_preview(
+    registry: State<'_, Mutex<SftpRegistry>>,
+    sid: String,
+    path: String,
+) -> Result<PreviewPayload, String> {
+    let tx = job_tx(&registry, &sid)?;
+    let (r, rx) = oneshot::channel();
+    tx.send(SftpJob::Preview { path, reply: r }).map_err(|_| "SFTP worker 已退出".to_string())?;
+    rx.await.map_err(|_| "SFTP 响应丢失".to_string())?
 }
 
 #[tauri::command]
@@ -1495,8 +1738,64 @@ pub fn open_with_editor(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_list, local_mkdir};
+    use super::{bom_encoding, ext_lower, image_mime, local_list, local_mkdir, looks_binary, trim_incomplete_utf8};
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn preview_sniffs_images_by_magic() {
+        assert_eq!(
+            image_mime("a.png", &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+            Some("image/png")
+        );
+        assert_eq!(image_mime("a.jpg", &[0xff, 0xd8, 0xff, 0xe0]), Some("image/jpeg"));
+        assert_eq!(image_mime("a.gif", b"GIF89a...."), Some("image/gif"));
+        assert_eq!(image_mime("a.webp", b"RIFF\x00\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+        assert_eq!(image_mime("a.ico", &[0x00, 0x00, 0x01, 0x00, 0x01, 0x00]), Some("image/x-icon"));
+        assert_eq!(image_mime("a.avif", b"\x00\x00\x00\x20ftypavif"), Some("image/avif"));
+        assert_eq!(
+            image_mime("a.svg", b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            Some("image/svg+xml")
+        );
+        assert_eq!(image_mime("noext", b"<svg/>"), None, "SVG 需要扩展名佐证");
+        assert_eq!(image_mime("a.bmp", b"BM\x36\x00"), Some("image/bmp"));
+        assert_eq!(image_mime("a.txt", b"BMW is a car"), None, "BM 两字节太弱，必须扩展名是 bmp");
+        assert_eq!(image_mime("a.txt", b"hello world"), None);
+    }
+
+    #[test]
+    fn preview_flags_binary_and_utf16() {
+        assert!(looks_binary(b"abc\0def"));
+        assert!(!looks_binary("纯文本".as_bytes()));
+        let utf16le = [0xff, 0xfe, b'a', 0x00];
+        assert!(!looks_binary(&utf16le), "UTF-16 BOM 文本不应判成二进制");
+        assert_eq!(bom_encoding(&utf16le), Some("utf-16le"));
+        assert_eq!(bom_encoding(&[0xfe, 0xff]), Some("utf-16be"));
+        assert_eq!(bom_encoding(b"plain"), None);
+    }
+
+    #[test]
+    fn preview_trims_partial_utf8() {
+        let mut cut = "截断".as_bytes().to_vec();
+        cut.truncate(cut.len() - 1);
+        trim_incomplete_utf8(&mut cut);
+        assert_eq!(cut, "截".as_bytes());
+
+        let mut valid = b"ok".to_vec();
+        trim_incomplete_utf8(&mut valid);
+        assert_eq!(valid, b"ok");
+
+        // 中间就是非法字节时不应把整段砍掉
+        let mut bad = b"ok\xff".to_vec();
+        trim_incomplete_utf8(&mut bad);
+        assert_eq!(bad, b"ok\xff");
+    }
+
+    #[test]
+    fn preview_ext_lower_handles_dots_and_dirs() {
+        assert_eq!(ext_lower("/var/log/x.TXT"), "txt");
+        assert_eq!(ext_lower("/home/u/.bashrc"), "");
+        assert_eq!(ext_lower("/home/u/a.tar.gz"), "gz");
+    }
 
     #[test]
     fn local_list_treats_symlinked_dir_as_dir() {

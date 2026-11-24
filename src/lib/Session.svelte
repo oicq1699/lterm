@@ -79,6 +79,7 @@
   let showSearch = $state(false);
   let showSftp = $state(false);
   let sftpOpening = $state(false);
+  let filesOpening = $state(false);
 
   async function openSftpWindow() {
     if (sftpOpening) return;
@@ -88,6 +89,16 @@
       await invoke('open_sftp_window', { sid: sessionId, profileId, title: `SFTP · ${profileName || profileId}` });
     } catch (e) { alert(String(e)); }
     finally { sftpOpening = false; }
+  }
+
+  async function openFilesWindow() {
+    if (filesOpening) return;
+    filesOpening = true;
+    try {
+      await invoke('sftp_open', { sid: sessionId, profileId, password: sessionPassword, proxyPasswords: sessionPasswords });
+      await invoke('open_files_window', { sid: sessionId, profileId, title: `文件浏览 · ${profileName || profileId}` });
+    } catch (e) { alert(String(e)); }
+    finally { filesOpening = false; }
   }
   let sftpW = $state(580);
   // 详情列（权限/所有者）随面板实际宽度出现，拖拽和「详情」按钮不会互相矛盾
@@ -621,6 +632,8 @@
             onclick={() => { if (prefSftpWindow === 'window') void openSftpWindow(); else showSftp = !showSftp; }}
             disabled={sftpOpening}
             title={prefSftpWindow === 'window' ? 'SFTP 独立窗口' : '文件传输面板'}>📁</button>
+    <button class="ptool" onmousedown={noFocus} onclick={() => void openFilesWindow()}
+            disabled={filesOpening} title="远程文件浏览器（独立窗口）" aria-label="远程文件浏览器">🗂</button>
     <button class="ptool" class:open={showFwd} onmousedown={noFocus} onclick={() => showFwd = !showFwd} title="端口转发面板">⇄</button>
   </div>
   {/if}
