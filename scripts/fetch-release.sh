@@ -24,6 +24,10 @@
 
 set -euo pipefail
 
+# 每条日志带本地时间，便于从 fetch.log 判断某次运行/某个文件的下载时刻
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+err() { printf '%s %s\n' "$(date '+%F %T')" "$*" >&2; }
+
 REPO="${REPO:-oicq1699/lterm}"
 PUBLISH_BASE="${PUBLISH_BASE:-https://www.linyong.tech/download/lterm}"
 STATE_FILE="last_version"
@@ -40,16 +44,18 @@ for arg in "$@"; do
     --force|-f) FORCE=1 ;;
     -h|--help) usage; exit 0 ;;
     *)
-      echo "未知参数: $arg（支持 --dry-run / --force / --help）" >&2
+      err "未知参数: $arg（支持 --dry-run / --force / --help）"
       exit 2
       ;;
   esac
 done
 
 command -v curl >/dev/null 2>&1 || {
-  echo "缺少 curl，请先安装" >&2
+  err "缺少 curl，请先安装"
   exit 1
 }
+
+log "开始执行: REPO=${REPO} PUBLISH_BASE=${PUBLISH_BASE}"
 
 api="https://api.github.com/repos/${REPO}/releases/latest"
 header=()
@@ -58,7 +64,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
 fi
 
 json=$(curl -fsSL --connect-timeout 15 --retry 3 --retry-delay 5 "${header[@]}" "$api") || {
-  echo "请求 GitHub API 失败: $api" >&2
+  err "请求 GitHub API 失败: $api"
   exit 1
 }
 
@@ -80,11 +86,11 @@ for a in json.load(sys.stdin).get('assets', []):
 fi
 
 [ -n "$tag" ] || {
-  echo "无法从 API 返回中解析 tag_name" >&2
+  err "无法从 API 返回中解析 tag_name"
   exit 1
 }
 [ -n "$entries" ] || {
-  echo "$tag 没有任何发布产物" >&2
+  err "$tag 没有任何发布产物"
   exit 1
 }
 
@@ -99,38 +105,38 @@ publish_manifest() {
   local oldp="https://github.com/${REPO}/releases/download/${tag}/"
   local newp="${PUBLISH_BASE}/${version}/"
   if [ ! -f "$src" ]; then
-    echo "缺少 $src，无法发布根 latest.json" >&2
+    err "缺少 $src，无法发布根 latest.json"
     return 1
   fi
   sed "s|${oldp}|${newp}|g" "$src" >"$tmp"
   if grep -qF "$oldp" "$tmp"; then
     rm -f "$tmp"
-    echo "清单里仍有未改写的 GitHub 地址，放弃发布根 latest.json" >&2
+    err "清单里仍有未改写的 GitHub 地址，放弃发布根 latest.json"
     return 1
   fi
   if [ -f latest.json ] && cmp -s "$tmp" latest.json; then
     rm -f "$tmp"
-    echo "根清单无需变化: ./latest.json"
+    log "根清单无需变化: ./latest.json"
   else
     mv -f "$tmp" latest.json
-    echo "根清单已发布: ./latest.json（下载地址 → ${newp}）"
+    log "根清单已发布: ./latest.json（下载地址 → ${newp}）"
   fi
 }
 
 if [ "$FORCE" -eq 0 ] && [ -n "$version" ] && [ "$version" = "$current" ]; then
-  echo "已是最新：$tag（记录于 ./$STATE_FILE）"
+  log "已是最新：$tag（记录于 ./$STATE_FILE）"
   publish_manifest || exit 1
   exit 0
 fi
 
-echo "发现新版本: ${current:-无本地记录} -> $tag"
+log "发现新版本: ${current:-无本地记录} -> $tag"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "（--dry-run）将在 ./$version/ 下载以下产物："
+  log "（--dry-run）将在 ./$version/ 下载以下产物："
   while IFS=$'\t' read -r _ u; do
-    [ -n "$u" ] && echo "  ${u##*/}"
+    [ -n "$u" ] && log "  ${u##*/}"
   done <<<"$entries"
-  echo "（--dry-run）并将刷新根 ./latest.json（下载地址 → ${PUBLISH_BASE}/${version}/）"
+  log "（--dry-run）并将刷新根 ./latest.json（下载地址 → ${PUBLISH_BASE}/${version}/）"
   exit 0
 fi
 
@@ -158,10 +164,10 @@ while IFS=$'\t' read -r size u; do
   dest="$version/$name"
   if [ -f "$dest" ]; then
     if is_num "$size" && [ "$(file_size "$dest")" != "$size" ]; then
-      echo "本地大小与发布不符，重新下载: $name"
+      log "本地大小与发布不符，重新下载: $name"
       rm -f "$dest" "$dest.part"
     else
-      echo "跳过（已存在且大小一致）: $dest"
+      log "跳过（已存在且大小一致）: $dest"
       continue
     fi
   elif [ -f "$dest.part" ] && is_num "$size" &&
@@ -169,24 +175,24 @@ while IFS=$'\t' read -r size u; do
     # 中断残留比发布体积还大说明是脏数据，续传只会拼出坏文件
     rm -f "$dest.part"
   fi
-  echo "下载: $name"
+  log "下载: $name"
   if dl "$u" "$dest"; then
-    echo "  -> $dest"
+    log "  -> $dest"
   else
-    echo "  下载失败: $name" >&2
+    err "  下载失败: $name"
     failed=1
   fi
 done <<<"$entries"
 
 if [ "$failed" -ne 0 ]; then
-  echo "存在失败的文件，不更新 $STATE_FILE；重新运行可续传/重试" >&2
+  err "存在失败的文件，不更新 $STATE_FILE；重新运行可续传/重试"
   exit 1
 fi
 
 publish_manifest || {
-  echo "根清单发布失败，不更新 $STATE_FILE" >&2
+  err "根清单发布失败，不更新 $STATE_FILE"
   exit 1
 }
 
 echo "$version" >"$STATE_FILE"
-echo "完成：$tag 已镜像到 ./$version/，版本记录已更新（./$STATE_FILE）"
+log "完成：$tag 已镜像到 ./$version/，版本记录已更新（./$STATE_FILE）"
