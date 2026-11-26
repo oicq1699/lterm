@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -51,6 +51,13 @@
   let tabDrag = $state<TabDrag | null>(null);
   let tabDrop = $state<number | null>(null); // 插入位（0..tabs.length，按拖动前下标）
   let tabbarEl: HTMLDivElement | undefined = $state();
+  let tabScroll = $state({ left: false, right: false });
+  let tabResizeObs: ResizeObserver | undefined;
+  let moreOpen = $state(false);
+  let moreQuery = $state('');
+  let moreSel = $state(0);
+  let moreInputEl: HTMLInputElement | undefined = $state();
+  let moreListEl: HTMLDivElement | undefined = $state();
   let renameEl: HTMLInputElement | undefined = $state();
   let tabClickMute = false; // 拖完紧跟的那次 click 不该再当成“点标签选中”
   // 双击到连上之间（TCP+认证最坏可达几十秒）必须有显性反馈：id → 名称
@@ -967,6 +974,100 @@
     if (renamingIdx === from) renamingIdx = -1; // 拖拽中不保留改名态
   }
 
+  // ---- 标签栏滚动 / 压缩 / 全部标签下拉 ----
+  const tabName = (t: Tab) => t.title || t.profile.name;
+
+  function updateTabScroll() {
+    const el = tabbarEl;
+    if (!el) return;
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    if (left !== tabScroll.left || right !== tabScroll.right) tabScroll = { left, right };
+  }
+
+  // 切换/新建标签后把当前标签滚进视野；滚动容器已排除右侧的 + / 更多按钮
+  function revealTab(i: number) {
+    const el = tabbarEl;
+    if (!el || i < 0) return;
+    const tabEl = el.querySelector<HTMLElement>(`.tab[data-tabidx="${i}"]`);
+    if (!tabEl) return;
+    const r = tabEl.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    const pad = 30;
+    if (r.left < box.left + pad) el.scrollLeft -= box.left + pad - r.left;
+    else if (r.right > box.right - pad) el.scrollLeft += r.right - (box.right - pad);
+    updateTabScroll();
+  }
+
+  function scrollTabs(dir: number) {
+    const el = tabbarEl;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(180, el.clientWidth * 0.7), behavior: 'smooth' });
+  }
+
+  const moreMatches = $derived.by(() => {
+    const q = moreQuery.trim().toLowerCase();
+    const out: { tab: Tab; i: number }[] = [];
+    tabs.forEach((t, i) => {
+      const hay = `${tabName(t)}\n${t.profile.name}\n${t.profile.username}@${t.profile.host}\n${t.profile.remark}`.toLowerCase();
+      if (!q || hay.includes(q)) out.push({ tab: t, i });
+    });
+    return out;
+  });
+
+  async function toggleMore() {
+    if (moreOpen) { moreOpen = false; return; }
+    moreOpen = true;
+    moreQuery = '';
+    moreSel = Math.max(0, activeIdx);
+    await tick();
+    moreInputEl?.focus();
+  }
+
+  function pickTab(i: number) {
+    const t = tabs[i];
+    if (!t) return;
+    activeIdx = i;
+    moreOpen = false;
+    requestAnimationFrame(() => {
+      revealTab(i);
+      fitFns.get(t.sid)?.();
+    });
+  }
+
+  function moreKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') { e.preventDefault(); moreOpen = false; return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!moreMatches.length) return;
+      const d = e.key === 'ArrowDown' ? 1 : -1;
+      moreSel = (moreSel + d + moreMatches.length) % moreMatches.length;
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const m = moreMatches[moreSel] ?? moreMatches[0];
+      if (m) pickTab(m.i);
+    }
+  }
+
+  // activeIdx / 标签数量变化后让当前标签保持可见
+  $effect(() => {
+    const i = activeIdx;
+    void tabs.length;
+    requestAnimationFrame(() => {
+      if (i >= 0) revealTab(i);
+      updateTabScroll();
+    });
+  });
+
+  // 下拉里用方向键移动时让选中项跟随滚动
+  $effect(() => {
+    const k = moreSel;
+    if (!moreOpen) return;
+    void tick().then(() => {
+      moreListEl?.querySelector<HTMLElement>(`[data-moreidx="${k}"]`)?.scrollIntoView({ block: 'nearest' });
+    });
+  });
+
   function setFont(size: number) {
     fontSize = size === 999 ? 14 : Math.min(28, Math.max(10, size));
     saveSettingsSoon();
@@ -1014,6 +1115,11 @@
   }
 
   onMount(async () => {
+    if (tabbarEl) {
+      tabResizeObs = new ResizeObserver(() => updateTabScroll());
+      tabResizeObs.observe(tabbarEl);
+    }
+    requestAnimationFrame(updateTabScroll);
     // 放最前面：启动早期就点 X 也该被问住，而不是等下面几个 await 跑完才挂上
     unlistenAll.push(await getCurrentWindow().onCloseRequested(async (ev) => {
       // 只要有 JS 监听这个事件，Tauri 就不会自己关窗口，所以先拦下，退不退交给 resolve_exit 说
@@ -1107,12 +1213,14 @@
   }
 
   function onWinResize() {
+    updateTabScroll();
     const t = activeTab;
     if (t) requestAnimationFrame(() => fitFns.get(t.sid)?.());
   }
 
   onDestroy(() => {
     clearTimeout(flashTimer);
+    tabResizeObs?.disconnect();
     window.removeEventListener('focusin', onFocusIn);
     window.removeEventListener('resize', onWinResize);
     window.removeEventListener('lterm-zoom', onZoom);
@@ -1291,34 +1399,72 @@
   {/if}
 
   <section class="right">
-    <div class="tabbar" bind:this={tabbarEl}>
-      {#each tabs as t, i (t.sid)}
-        <div class="tab" class:active={i === activeIdx}
-             class:dragging={tabDrag?.live && tabDrag.from === i}
-             class:drop-left={tabDrag?.live && tabDrop === i && tabDrag.from !== i}
-             class:drop-right={tabDrag?.live && tabDrop === i + 1 && i === tabs.length - 1 && tabDrag.from !== i}
-             role="tab" tabindex={0} aria-selected={i === activeIdx}
-             data-tabidx={i} title={t.title || t.profile.name}
-             onclick={() => { if (tabClickMute) return; activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); }}
-             ondblclick={(e) => { e.preventDefault(); startRename(i, e); }}
-             onpointerdown={(e) => tabGripDown(e, i)}
-             onpointermove={tabGripMove}
-             onpointerup={tabGripUp} onpointercancel={tabGripUp}
-             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); } }}>
-          <span class="dot" class:connected={t.alive} class:closed={!t.alive}></span>
-          {#if renamingIdx === i}
-            <input class="rename" bind:this={renameEl} bind:value={renameVal}
-                   onkeydown={renameKeydown} onblur={commitRename}
-                   onmousedown={(e) => e.stopPropagation()} aria-label="重命名标签" />
-          {:else}
-            {t.title || t.profile.name}
-          {/if}
-          <button class="close" aria-label={`关闭标签 ${t.title || t.profile.name}`}
-                  onmousedown={noFocus}
-                  onclick={(e) => { e.stopPropagation(); closeTab(i); }}>×</button>
+    <div class="tabbar">
+      <div class="tabs-wrap">
+        <div class="tabs" bind:this={tabbarEl} onscroll={updateTabScroll}>
+          {#each tabs as t, i (t.sid)}
+            <div class="tab" class:active={i === activeIdx}
+                 class:dragging={tabDrag?.live && tabDrag.from === i}
+                 class:drop-left={tabDrag?.live && tabDrop === i && tabDrag.from !== i}
+                 class:drop-right={tabDrag?.live && tabDrop === i + 1 && i === tabs.length - 1 && tabDrag.from !== i}
+                 role="tab" tabindex={0} aria-selected={i === activeIdx}
+                 data-tabidx={i} title={tabName(t)}
+                 onclick={() => { if (tabClickMute) return; activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); }}
+                 ondblclick={(e) => { e.preventDefault(); startRename(i, e); }}
+                 onpointerdown={(e) => tabGripDown(e, i)}
+                 onpointermove={tabGripMove}
+                 onpointerup={tabGripUp} onpointercancel={tabGripUp}
+                 onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeIdx = i; requestAnimationFrame(() => fitFns.get(t.sid)?.()); } }}>
+              <span class="dot" class:connected={t.alive} class:closed={!t.alive}></span>
+              {#if renamingIdx === i}
+                <input class="rename" bind:this={renameEl} bind:value={renameVal}
+                       onkeydown={renameKeydown} onblur={commitRename}
+                       onmousedown={(e) => e.stopPropagation()} aria-label="重命名标签" />
+              {:else}
+                <span class="tname">{tabName(t)}</span>
+              {/if}
+              <button class="close" aria-label={`关闭标签 ${tabName(t)}`}
+                      onmousedown={noFocus}
+                      onclick={(e) => { e.stopPropagation(); closeTab(i); }}>×</button>
+            </div>
+          {/each}
         </div>
-      {/each}
+        {#if tabScroll.left}
+          <button class="edge left" onclick={() => scrollTabs(-1)} aria-label="向左滚动标签">‹</button>
+        {/if}
+        {#if tabScroll.right}
+          <button class="edge right" onclick={() => scrollTabs(1)} aria-label="向右滚动标签">›</button>
+        {/if}
+      </div>
       <button class="tab newtab" onclick={() => void newLocalTab()} title="新建本地终端">＋</button>
+      {#if tabs.length > 1}
+        <button class="tab moretab" class:open={moreOpen} onclick={() => void toggleMore()}
+                title="全部标签（可搜索）" aria-haspopup="dialog" aria-expanded={moreOpen}>更多 ▾</button>
+      {/if}
+      {#if moreOpen && tabs.length > 1}
+        <button class="more-mask" aria-label="关闭标签列表" onclick={() => (moreOpen = false)}></button>
+        <div class="more-pop" role="dialog" aria-label="全部标签">
+          <input class="more-search" bind:this={moreInputEl} bind:value={moreQuery}
+                 placeholder="搜索标签…" aria-label="搜索标签"
+                 oninput={() => (moreSel = 0)} onkeydown={moreKeydown} />
+          <div class="more-list" bind:this={moreListEl}>
+            {#each moreMatches as m, k (m.tab.sid)}
+              <div class="more-item" class:sel={k === moreSel} class:active={m.i === activeIdx}
+                   data-moreidx={k}>
+                <button type="button" class="more-hit" onclick={() => pickTab(m.i)} onmouseenter={() => (moreSel = k)} title={tabName(m.tab)}>
+                  <span class="dot" class:connected={m.tab.alive} class:closed={!m.tab.alive}></span>
+                  <span class="more-name">{tabName(m.tab)}</span>
+                  <span class="more-host">{m.tab.local ? '本地终端' : `${m.tab.profile.username}@${m.tab.profile.host}`}</span>
+                </button>
+                <button type="button" class="more-close" onmousedown={noFocus} aria-label={`关闭标签 ${tabName(m.tab)}`}
+                        onclick={(e) => { e.stopPropagation(); closeTab(m.i); }}>×</button>
+              </div>
+            {:else}
+              <div class="more-empty">没有匹配的标签</div>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </div>
 
     <div class="panes" bind:this={paneEl}>
@@ -1912,9 +2058,18 @@
   .del:hover { color: #e57373; }
   .empty { padding: 16px; color: #666; }
   .right { flex: 1; display: flex; flex-direction: column; background: #101010; min-width: 0; }
-  .tabbar { display: flex; background: #181818; border-bottom: 1px solid #2a2a2a; overflow-x: auto; }
-  .tabbar::-webkit-scrollbar { display: none; }
-  .tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: none; border: none; border-right: 1px solid #262626; color: #999; cursor: pointer; font-size: 13px; white-space: nowrap; user-select: none; }
+  .tabbar { position: relative; display: flex; background: #181818; border-bottom: 1px solid #2a2a2a; }
+  .tabs-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+  .tabs { flex: 1; min-width: 0; display: flex; overflow-x: auto; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: none; border: none; border-right: 1px solid #262626; color: #999; cursor: pointer; font-size: 13px; white-space: nowrap; user-select: none; flex: 0 1 auto; min-width: 96px; max-width: 220px; }
+  .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tab .dot, .tab .close { flex-shrink: 0; }
+  .edge { position: absolute; top: 0; bottom: 0; width: 26px; z-index: 2; display: flex; align-items: center; justify-content: center;
+    border: none; background: #181818; color: #8ab4f8; cursor: pointer; font-size: 15px; line-height: 1; }
+  .edge.left { left: 0; background: linear-gradient(90deg, #181818 55%, transparent); }
+  .edge.right { right: 0; background: linear-gradient(270deg, #181818 55%, transparent); }
+  .edge:hover { color: #cfe1ff; }
   .tab.active { background: #101010; color: #eee; box-shadow: inset 0 3px 0 0 #4fd6be; }
   .tab.dragging { cursor: grabbing; opacity: .45; }
   .tab.drop-left { box-shadow: inset 2px 0 0 0 #8ab4f8; }
@@ -1925,6 +2080,28 @@
   .tab .close { border: none; background: none; color: inherit; padding: 0 2px; border-radius: 3px; cursor: pointer; line-height: 1; }
   .tab .close:hover { background: #444; color: #fff; }
   .newtab { color: #6a9fb5; }
+  .newtab, .moretab { flex: 0 0 auto; min-width: 0; max-width: none; }
+  .moretab { color: #8ab4f8; border-left: 1px solid #2a2a2a; }
+  .moretab.open { background: #222; }
+  .more-mask { position: fixed; inset: 0; z-index: 39; border: none; padding: 0; background: transparent; cursor: default; }
+  .more-pop { position: absolute; top: 100%; right: 0; z-index: 40; width: 380px; max-width: 90vw; max-height: min(460px, 70vh);
+    display: flex; flex-direction: column; background: #1d1d1d; border: 1px solid #3a3a3a; border-radius: 0 0 8px 8px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.6); }
+  .more-search { margin: 8px; padding: 6px 9px; background: #262626; border: 1px solid #444; border-radius: 6px;
+    color: #eee; font: inherit; font-size: 12.5px; outline: none; flex-shrink: 0; }
+  .more-search:focus { border-color: #8ab4f8; }
+  .more-list { overflow-y: auto; padding: 0 4px 6px; }
+  .more-item { display: flex; align-items: center; gap: 4px; border-radius: 5px; }
+  .more-item.sel { background: #262626; }
+  .more-hit { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+    background: none; border: none; color: #ccc; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; border-radius: 5px; }
+  .more-item.active .more-name { color: #8ab4f8; }
+  .more-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .more-host { color: #777; font-size: 11.5px; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .more-item .dot { flex-shrink: 0; }
+  .more-close { flex-shrink: 0; background: none; border: none; color: #777; cursor: pointer; padding: 0 4px; border-radius: 3px; }
+  .more-close:hover { background: #444; color: #fff; }
+  .more-empty { padding: 14px; text-align: center; color: #777; }
   .panes { flex: 1; min-height: 0; position: relative; display: flex; }
   .panes > :global(div:not(.welcome)) { position: absolute; inset: 0; }
   .welcome { margin: auto; text-align: center; color: #777; }
