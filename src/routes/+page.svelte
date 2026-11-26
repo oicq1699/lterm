@@ -55,9 +55,7 @@
   let tabResizeObs: ResizeObserver | undefined;
   let moreOpen = $state(false);
   let moreQuery = $state('');
-  let moreSel = $state(0);
   let moreInputEl: HTMLInputElement | undefined = $state();
-  let moreListEl: HTMLDivElement | undefined = $state();
   let renameEl: HTMLInputElement | undefined = $state();
   let tabClickMute = false; // 拖完紧跟的那次 click 不该再当成“点标签选中”
   // 双击到连上之间（TCP+认证最坏可达几十秒）必须有显性反馈：id → 名称
@@ -1019,7 +1017,6 @@
     if (moreOpen) { moreOpen = false; return; }
     moreOpen = true;
     moreQuery = '';
-    moreSel = Math.max(0, activeIdx);
     await tick();
     moreInputEl?.focus();
   }
@@ -1035,20 +1032,6 @@
     });
   }
 
-  function moreKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') { e.preventDefault(); moreOpen = false; return; }
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (!moreMatches.length) return;
-      const d = e.key === 'ArrowDown' ? 1 : -1;
-      moreSel = (moreSel + d + moreMatches.length) % moreMatches.length;
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      const m = moreMatches[moreSel] ?? moreMatches[0];
-      if (m) pickTab(m.i);
-    }
-  }
-
   // activeIdx / 标签数量变化后让当前标签保持可见
   $effect(() => {
     const i = activeIdx;
@@ -1056,15 +1039,6 @@
     requestAnimationFrame(() => {
       if (i >= 0) revealTab(i);
       updateTabScroll();
-    });
-  });
-
-  // 下拉里用方向键移动时让选中项跟随滚动
-  $effect(() => {
-    const k = moreSel;
-    if (!moreOpen) return;
-    void tick().then(() => {
-      moreListEl?.querySelector<HTMLElement>(`[data-moreidx="${k}"]`)?.scrollIntoView({ block: 'nearest' });
     });
   });
 
@@ -1444,14 +1418,16 @@
       {#if moreOpen && tabs.length > 1}
         <button class="more-mask" aria-label="关闭标签列表" onclick={() => (moreOpen = false)}></button>
         <div class="more-pop" role="dialog" aria-label="全部标签">
+          <div class="more-head">
+            <span>全部标签</span>
+            <button class="more-x" onclick={() => (moreOpen = false)} aria-label="关闭列表">×</button>
+          </div>
           <input class="more-search" bind:this={moreInputEl} bind:value={moreQuery}
-                 placeholder="搜索标签…" aria-label="搜索标签"
-                 oninput={() => (moreSel = 0)} onkeydown={moreKeydown} />
-          <div class="more-list" bind:this={moreListEl}>
-            {#each moreMatches as m, k (m.tab.sid)}
-              <div class="more-item" class:sel={k === moreSel} class:active={m.i === activeIdx}
-                   data-moreidx={k}>
-                <button type="button" class="more-hit" onclick={() => pickTab(m.i)} onmouseenter={() => (moreSel = k)} title={tabName(m.tab)}>
+                 placeholder="搜索标签…" aria-label="搜索标签" />
+          <div class="more-list">
+            {#each moreMatches as m (m.tab.sid)}
+              <div class="more-item" class:active={m.i === activeIdx}>
+                <button type="button" class="more-hit" onclick={() => pickTab(m.i)} title={tabName(m.tab)}>
                   <span class="dot" class:connected={m.tab.alive} class:closed={!m.tab.alive}></span>
                   <span class="more-name">{tabName(m.tab)}</span>
                   <span class="more-host">{m.tab.local ? '本地终端' : `${m.tab.profile.username}@${m.tab.profile.host}`}</span>
@@ -2090,9 +2066,13 @@
   .more-search { margin: 8px; padding: 6px 9px; background: #262626; border: 1px solid #444; border-radius: 6px;
     color: #eee; font: inherit; font-size: 12.5px; outline: none; flex-shrink: 0; }
   .more-search:focus { border-color: #8ab4f8; }
+  .more-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 0 12px;
+    color: #999; font-size: 12px; flex-shrink: 0; }
+  .more-x { border: none; background: none; color: #999; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px; border-radius: 3px; }
+  .more-x:hover { background: #333; color: #fff; }
   .more-list { overflow-y: auto; padding: 0 4px 6px; }
   .more-item { display: flex; align-items: center; gap: 4px; border-radius: 5px; }
-  .more-item.sel { background: #262626; }
+  .more-item:hover { background: #262626; }
   .more-hit { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px;
     background: none; border: none; color: #ccc; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; border-radius: 5px; }
   .more-item.active .more-name { color: #8ab4f8; }
