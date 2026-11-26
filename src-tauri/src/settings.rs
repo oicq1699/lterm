@@ -18,6 +18,8 @@ pub struct Settings {
     pub collapsed_folders: Vec<String>,
     /// Ctrl+Enter 发送什么：newline=等价 Alt+Enter（多数 TUI 的换行键）/ csiu=Kitty 编码 / same=不拦截（原样 Enter）
     pub ctrl_enter: String,
+    /// Shift+Enter 是否按 ctrl_enter 的偏好一起改写（终端里二者默认都和 Enter 同字节）
+    pub shift_enter: bool,
     /// ANSI 调色板名，见前端 lib/termPalette.ts；未知名字前端会回落到 tango
     pub palette: String,
     /// 增亮档位 0=关 1..3，直接把配色表数值做伽马提升
@@ -57,6 +59,7 @@ impl Default for Settings {
             context_menu: true,
             collapsed_folders: Vec::new(),
             ctrl_enter: "newline".into(),
+            shift_enter: true,
             palette: "tango".into(),
             bright: 0,
             confirm_close: true,
@@ -125,6 +128,7 @@ mod tests {
         let st = AppSettings::load(&dir).unwrap();
         assert_eq!(st.inner.font_size, 16);
         assert_eq!(st.inner.ctrl_enter, "newline", "老配置缺字段应取默认值");
+        assert!(st.inner.shift_enter, "老配置缺 shiftEnter 应默认与 Ctrl+Enter 同处理");
         assert_eq!(st.inner.palette, "tango", "老配置缺 palette 应取默认值");
         assert_eq!(st.inner.bright, 0);
         assert!(st.inner.confirm_close, "老配置缺 confirmClose 应默认弹确认");
@@ -139,10 +143,12 @@ mod tests {
 
         let mut s = st.inner.clone();
         s.ctrl_enter = "same".into();
+        s.shift_enter = false;
         let mut app = AppSettings::load(&dir).unwrap();
         app.set(s).unwrap();
         let re = AppSettings::load(&dir).unwrap();
         assert_eq!(re.inner.ctrl_enter, "same");
+        assert!(!re.inner.shift_enter);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

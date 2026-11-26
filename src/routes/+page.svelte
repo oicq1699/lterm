@@ -55,7 +55,9 @@
   let tabResizeObs: ResizeObserver | undefined;
   let moreOpen = $state(false);
   let moreQuery = $state('');
+  let moreSel = $state(0);
   let moreInputEl: HTMLInputElement | undefined = $state();
+  let moreListEl: HTMLDivElement | undefined = $state();
   let renameEl: HTMLInputElement | undefined = $state();
   let tabClickMute = false; // 拖完紧跟的那次 click 不该再当成“点标签选中”
   // 双击到连上之间（TCP+认证最坏可达几十秒）必须有显性反馈：id → 名称
@@ -90,7 +92,7 @@
   }
 
   // ---- 偏好（持久化到 data/settings.json，首次自动迁移旧 localStorage 值）----
-  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string; sftpWindow: string; swapCopyPaste: boolean; softwareRender: boolean };
+  type Settings = { fontFamily: string; fontSize: number; copyOnSelect: boolean; confirmMultiLine: boolean; asideHidden: boolean; contextMenu: boolean; collapsedFolders: string[]; ctrlEnter: string; shiftEnter: boolean; palette: string; bright: number; confirmClose: boolean; compactList: boolean; sftpHist: number; confirmSftpDelete: boolean; confirmSftpOverwrite: boolean; editCmd: string; checkUpdate: boolean; skipUpdate: string; sftpWindow: string; swapCopyPaste: boolean; softwareRender: boolean };
   let prefCopyOnSelect = $state(true);
   let prefConfirmMultiLine = $state(true);
   let prefContextMenu = $state(true);
@@ -108,6 +110,7 @@
   let lockBusy = $state(false);
   let collapsedFolders = $state<string[]>([]);
   let prefCtrlEnter = $state('newline');
+  let prefShiftEnter = $state(true);
   let prefSwapCopyPaste = $state(false);
   let prefSoftwareRender = $state(false);
   let prefPalette = $state('tango');
@@ -167,7 +170,7 @@
         fontFamily, fontSize, copyOnSelect: prefCopyOnSelect,
         confirmMultiLine: prefConfirmMultiLine, asideHidden: !showAside,
         contextMenu: prefContextMenu,
-        collapsedFolders, ctrlEnter: prefCtrlEnter,
+        collapsedFolders, ctrlEnter: prefCtrlEnter, shiftEnter: prefShiftEnter,
         swapCopyPaste: prefSwapCopyPaste,
         softwareRender: prefSoftwareRender,
         palette: prefPalette, bright: prefBright, confirmClose: prefConfirmClose, compactList: prefCompactList,
@@ -1017,6 +1020,7 @@
     if (moreOpen) { moreOpen = false; return; }
     moreOpen = true;
     moreQuery = '';
+    moreSel = Math.max(0, activeIdx);
     await tick();
     moreInputEl?.focus();
   }
@@ -1032,6 +1036,21 @@
     });
   }
 
+  // 下拉打开且焦点在搜索框时，方向键选择 / Enter 切换 / Esc 关闭；关闭后完全不生效
+  function moreKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') { e.preventDefault(); moreOpen = false; return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!moreMatches.length) return;
+      const d = e.key === 'ArrowDown' ? 1 : -1;
+      moreSel = (moreSel + d + moreMatches.length) % moreMatches.length;
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const m = moreMatches[moreSel] ?? moreMatches[0];
+      if (m) pickTab(m.i);
+    }
+  }
+
   // activeIdx / 标签数量变化后让当前标签保持可见
   $effect(() => {
     const i = activeIdx;
@@ -1039,6 +1058,15 @@
     requestAnimationFrame(() => {
       if (i >= 0) revealTab(i);
       updateTabScroll();
+    });
+  });
+
+  // 下拉里用方向键移动时让选中项跟随滚动
+  $effect(() => {
+    const k = moreSel;
+    if (!moreOpen) return;
+    void tick().then(() => {
+      moreListEl?.querySelector<HTMLElement>(`[data-moreidx="${k}"]`)?.scrollIntoView({ block: 'nearest' });
     });
   });
 
@@ -1143,6 +1171,7 @@
       prefContextMenu = s.contextMenu;
       collapsedFolders = s.collapsedFolders ?? [];
       prefCtrlEnter = s.ctrlEnter || 'newline';
+      prefShiftEnter = s.shiftEnter !== false;
       prefSwapCopyPaste = s.swapCopyPaste === true;
       prefSoftwareRender = s.softwareRender === true;
       prefPalette = s.palette || 'tango';
@@ -1423,11 +1452,13 @@
             <button class="more-x" onclick={() => (moreOpen = false)} aria-label="关闭列表">×</button>
           </div>
           <input class="more-search" bind:this={moreInputEl} bind:value={moreQuery}
-                 placeholder="搜索标签…" aria-label="搜索标签" />
-          <div class="more-list">
-            {#each moreMatches as m (m.tab.sid)}
-              <div class="more-item" class:active={m.i === activeIdx}>
-                <button type="button" class="more-hit" onclick={() => pickTab(m.i)} title={tabName(m.tab)}>
+                 placeholder="搜索标签…" aria-label="搜索标签"
+                 oninput={() => (moreSel = 0)} onkeydown={moreKeydown} />
+          <div class="more-list" bind:this={moreListEl}>
+            {#each moreMatches as m, k (m.tab.sid)}
+              <div class="more-item" class:sel={k === moreSel} class:active={m.i === activeIdx}
+                   data-moreidx={k}>
+                <button type="button" class="more-hit" onclick={() => pickTab(m.i)} onmouseenter={() => (moreSel = k)} title={tabName(m.tab)}>
                   <span class="dot" class:connected={m.tab.alive} class:closed={!m.tab.alive}></span>
                   <span class="more-name">{tabName(m.tab)}</span>
                   <span class="more-host">{m.tab.local ? '本地终端' : `${m.tab.profile.username}@${m.tab.profile.host}`}</span>
@@ -1470,6 +1501,7 @@
                  {prefConfirmMultiLine}
                  prefContextMenu={prefContextMenu}
                  prefCtrlEnter={prefCtrlEnter}
+                 prefShiftEnter={prefShiftEnter}
                  prefSwapCopyPaste={prefSwapCopyPaste}
                  prefSoftwareRender={prefSoftwareRender}
                  isLocal={!!t.local}
@@ -1678,7 +1710,8 @@
                 <option value="same">不拦截（等同 Enter）</option>
               </select>
             </div>
-            <div class="hint">终端协议里 Ctrl+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
+            <label class="ck"><input type="checkbox" bind:checked={prefShiftEnter} onchange={saveSettingsSoon} /> Shift+Enter 与 Ctrl+Enter 同样处理</label>
+            <div class="hint">终端协议里 Ctrl+Enter / Shift+Enter 和 Enter 是同一字节，opencode 这类 TUI 需要改写才能收到换行。</div>
             <label class="ck"><input type="checkbox" bind:checked={prefSwapCopyPaste} onchange={saveSettingsSoon} /> 反转 Ctrl+C/V 与 Ctrl+Shift+C/V（Ctrl+C 复制、Ctrl+V 粘贴）</label>
             <div class="hint">反转后 Ctrl+Shift+C 直接给终端发 SIGINT（\x03），Ctrl+Shift+V 发 \x16；不再走应用复制/粘贴。</div>
 
@@ -2072,7 +2105,7 @@
   .more-x:hover { background: #333; color: #fff; }
   .more-list { overflow-y: auto; padding: 0 4px 6px; }
   .more-item { display: flex; align-items: center; gap: 4px; border-radius: 5px; }
-  .more-item:hover { background: #262626; }
+  .more-item:hover, .more-item.sel { background: #262626; }
   .more-hit { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px;
     background: none; border: none; color: #ccc; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; border-radius: 5px; }
   .more-item.active .more-name { color: #8ab4f8; }

@@ -47,6 +47,8 @@
     prefContextMenu: boolean;
     /** Ctrl+Enter 发送的字节：'newline'（等价 Alt+Enter）| 'csiu'（Kitty 编码）| 'same'（不拦截） */
     prefCtrlEnter: string;
+    /** Shift+Enter 是否按 Ctrl+Enter 的偏好一起改写 */
+    prefShiftEnter?: boolean;
     /** 反转复制/粘贴：Ctrl+C/V 走应用复制粘贴，Ctrl+Shift+C/V 发原始 \x03/\x16 */
     prefSwapCopyPaste: boolean;
     /** 软件渲染：不加载 WebGL 插件，走 xterm 自带 DOM 渲染器（Windows GPU 花屏/丢字时救急） */
@@ -67,7 +69,7 @@
     prefSftpWindow = 'embedded', profileName = '', sessionPasswords = {},
     prefConfirmSftpDelete = true, prefConfirmSftpOverwrite = false,
     prefCopyOnSelect, prefConfirmMultiLine,
-    prefContextMenu, prefCtrlEnter, prefSwapCopyPaste, prefSoftwareRender = false, isLocal = false, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
+    prefContextMenu, prefCtrlEnter, prefShiftEnter = true, prefSwapCopyPaste, prefSoftwareRender = false, isLocal = false, onClosed, onClone, onFocusBack, onResize, registerFit, registerApi,
   }: Props = $props();
 
   let term: Terminal | undefined;
@@ -460,15 +462,18 @@
         invoke('toggle_devtools').catch(() => {});
         return false;
       }
-      if (e.type !== 'keydown' || !e.ctrlKey) return true;
+      if (e.type !== 'keydown') return true;
       const k = e.key.toLowerCase();
-      // Ctrl+Enter 在终端协议里和 Enter 是同一字节（\r），TUI 分不出来，
-      // 所以按偏好改写成 Alt+Enter 的 ESC+CR，或 Kitty CSI-u 编码
-      if (k === 'enter' && !e.shiftKey && !e.metaKey && prefCtrlEnter !== 'same') {
+      // Ctrl+Enter / Shift+Enter 在终端协议里和 Enter 是同一字节（\r），TUI 分不出来，
+      // 所以按偏好改写成 Alt+Enter 的 ESC+CR，或 Kitty CSI-u 编码；Shift+Enter 由设置单独开关。
+      const ctrlNewline = e.ctrlKey && !e.shiftKey && !e.metaKey && k === 'enter';
+      const shiftNewline = prefShiftEnter && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && k === 'enter';
+      if ((ctrlNewline || shiftNewline) && prefCtrlEnter !== 'same') {
         e.preventDefault();
         sendText(CTRL_ENTER_BYTES[prefCtrlEnter] ?? '\x1b\r');
         return false;
       }
+      if (!e.ctrlKey) return true;
       // preventDefault：屏蔽 WebView2 原生 Ctrl+Shift+C/V 快捷键，避免与手动 paste 叠加成双份
       if (prefSwapCopyPaste) {
         // 反转模式：Ctrl+C/V = 复制/粘贴；Ctrl+Shift+C/V = 直接发原始 \x03/\x16 给 PTY
