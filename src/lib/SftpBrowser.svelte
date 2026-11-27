@@ -46,6 +46,12 @@
   let remotePath = $state('.');
   let localEntries = $state<Entry[]>([]);
   let remoteEntries = $state<Entry[]>([]);
+  type SortKey = 'name' | 'size' | 'time';
+  type SortState = { key: SortKey; dir: 1 | -1 };
+  let localSort = $state<SortState>({ key: 'name', dir: 1 });
+  let remoteSort = $state<SortState>({ key: 'name', dir: 1 });
+  const localView = $derived(sortEntries(localEntries, localSort));
+  const remoteView = $derived(sortEntries(remoteEntries, remoteSort));
   let localSel = $state<Set<string>>(new Set());
   let remoteSel = $state<Set<string>>(new Set());
   let localAnchor = $state<string | null>(null);
@@ -79,6 +85,30 @@
   const fmtOctal = (mode: number | null | undefined) => (mode == null ? '' : '0' + (mode & 0o7777).toString(8).padStart(3, '0'));
   const fmtOwner = (en: Entry) => en.user ?? (en.uid != null ? String(en.uid) : '');
   const fmtGroup = (en: Entry) => en.group ?? (en.gid != null ? String(en.gid) : '');
+
+  // 目录始终排在文件前并按名称排列；点击表头只在文件之间切换排序
+  function cmpName(a: Entry, b: Entry) {
+    return a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
+  }
+  function sortEntries(list: Entry[], sort: SortState): Entry[] {
+    return [...list].sort((a, b) => {
+      if (a.is_dir && b.is_dir) return cmpName(a, b);
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      let r = 0;
+      if (sort.key === 'name') r = cmpName(a, b);
+      else if (sort.key === 'size') r = a.size - b.size;
+      else r = a.modified - b.modified;
+      if (r === 0) return cmpName(a, b);
+      return r * sort.dir;
+    });
+  }
+  function toggleSort(which: 'local' | 'remote', key: SortKey) {
+    const cur = which === 'local' ? localSort : remoteSort;
+    const next: SortState = { key, dir: cur.key === key ? (cur.dir === 1 ? -1 : 1) : 1 };
+    if (which === 'local') localSort = next;
+    else remoteSort = next;
+  }
+  const sortMark = (s: SortState, key: SortKey) => (s.key === key ? (s.dir === 1 ? ' ▲' : ' ▼') : '');
 
   function localSep(p: string) { return /^[a-zA-Z]:|\\/.test(p) ? '\\' : '/'; }
   function joinLocal(dir: string, name: string) {
@@ -264,7 +294,7 @@
     which === 'local' ? loadLocal(path) : loadRemote(path);
   }
 
-  const entriesOf = (which: 'local' | 'remote') => (which === 'local' ? localEntries : remoteEntries);
+  const entriesOf = (which: 'local' | 'remote') => (which === 'local' ? localView : remoteView);
 
   function setSel(which: 'local' | 'remote', next: Set<string>, anchor: string | null) {
     if (which === 'local') { localSel = next; localAnchor = anchor; }
@@ -547,11 +577,21 @@
           </ul>
         {/if}
       </div>
-      {#if wide}
-        <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
-      {/if}
+      <div class="colhead">
+        <span class="ico"></span>
+        {#if wide}
+          <span class="fperm">权限</span>
+          <span class="fown">所有者</span>
+        {/if}
+        <button type="button" class="ch ch-name" class:on={localSort.key === 'name'}
+                onclick={() => toggleSort('local', 'name')} title="按名称排序（再点切换顺序/倒序）">名称{sortMark(localSort, 'name')}</button>
+        <button type="button" class="ch fsize" class:on={localSort.key === 'size'}
+                onclick={() => toggleSort('local', 'size')} title="按大小排序（再点切换顺序/倒序）">大小{sortMark(localSort, 'size')}</button>
+        <button type="button" class="ch fdate" class:on={localSort.key === 'time'}
+                onclick={() => toggleSort('local', 'time')} title="按修改时间排序（再点切换顺序/倒序）">时间{sortMark(localSort, 'time')}</button>
+      </div>
       <ul role="listbox" aria-label="本地文件列表" onkeydown={(e) => listKey(e, 'local')}>
-        {#each localEntries as en (en.path)}
+        {#each localView as en (en.path)}
           <li class:selected={localSel.has(en.path)} role="option" aria-selected={localSel.has(en.path)} tabindex={0}
               oncontextmenu={(e) => openMenu(e, 'local', en)}
               onclick={(e) => toggleSel('local', en.path, e)}
@@ -594,11 +634,21 @@
           </ul>
         {/if}
       </div>
-      {#if wide}
-        <div class="colhead"><span class="ico"></span><span class="fperm">权限</span><span class="fown">所有者</span><span class="ch-name">名称</span><span class="fsize">大小</span><span class="fdate">时间</span></div>
-      {/if}
+      <div class="colhead">
+        <span class="ico"></span>
+        {#if wide}
+          <span class="fperm">权限</span>
+          <span class="fown">所有者</span>
+        {/if}
+        <button type="button" class="ch ch-name" class:on={remoteSort.key === 'name'}
+                onclick={() => toggleSort('remote', 'name')} title="按名称排序（再点切换顺序/倒序）">名称{sortMark(remoteSort, 'name')}</button>
+        <button type="button" class="ch fsize" class:on={remoteSort.key === 'size'}
+                onclick={() => toggleSort('remote', 'size')} title="按大小排序（再点切换顺序/倒序）">大小{sortMark(remoteSort, 'size')}</button>
+        <button type="button" class="ch fdate" class:on={remoteSort.key === 'time'}
+                onclick={() => toggleSort('remote', 'time')} title="按修改时间排序（再点切换顺序/倒序）">时间{sortMark(remoteSort, 'time')}</button>
+      </div>
       <ul role="listbox" aria-label="远端文件列表" onkeydown={(e) => listKey(e, 'remote')}>
-        {#each remoteEntries as en (en.path)}
+        {#each remoteView as en (en.path)}
           <li class:selected={remoteSel.has(en.path)} role="option" aria-selected={remoteSel.has(en.path)} tabindex={0}
               oncontextmenu={(e) => openMenu(e, 'remote', en)}
               onclick={(e) => toggleSel('remote', en.path, e)}
@@ -711,6 +761,10 @@
   .colhead { display: flex; gap: 6px; padding: 2px 8px; color: #666; font-size: 11px; border-bottom: 1px solid #262626; }
   .colhead span { flex-shrink: 0; }
   .colhead .ch-name { flex: 1; }
+  .colhead .ch { flex-shrink: 0; background: none; border: none; padding: 0; font: inherit; font-size: 11px; color: #888; cursor: pointer; }
+  .colhead .ch:hover { color: #cfe1ff; }
+  .colhead .ch.on { color: #8ab4f8; }
+  .colhead .ch.ch-name { flex: 1; min-width: 0; text-align: left; }
   .fdate { width: 76px; flex-shrink: 0; text-align: right; color: #666; }
   .empty { color: #666; padding: 8px; }
   .ops { display: flex; gap: 4px; padding: 4px; border-top: 1px solid #2a2a2a; flex-wrap: wrap; }
