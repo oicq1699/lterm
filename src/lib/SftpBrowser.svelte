@@ -46,7 +46,7 @@
   let remotePath = $state('.');
   let localEntries = $state<Entry[]>([]);
   let remoteEntries = $state<Entry[]>([]);
-  type SortKey = 'name' | 'size' | 'time';
+  type SortKey = 'name' | 'size' | 'time' | 'owner';
   type SortState = { key: SortKey; dir: 1 | -1 };
   let localSort = $state<SortState>({ key: 'name', dir: 1 });
   let remoteSort = $state<SortState>({ key: 'name', dir: 1 });
@@ -97,6 +97,7 @@
       let r = 0;
       if (sort.key === 'name') r = cmpName(a, b);
       else if (sort.key === 'size') r = a.size - b.size;
+      else if (sort.key === 'owner') r = fmtOwner(a).localeCompare(fmtOwner(b), 'zh-CN', { numeric: true, sensitivity: 'base' });
       else r = a.modified - b.modified;
       if (r === 0) return cmpName(a, b);
       return r * sort.dir;
@@ -581,7 +582,8 @@
         <span class="ico"></span>
         {#if wide}
           <span class="fperm">权限</span>
-          <span class="fown">所有者</span>
+          <button type="button" class="ch fown" class:on={localSort.key === 'owner'}
+                  onclick={() => toggleSort('local', 'owner')} title="按所有者排序（再点切换顺序/倒序）">所有者{sortMark(localSort, 'owner')}</button>
         {/if}
         <button type="button" class="ch ch-name" class:on={localSort.key === 'name'}
                 onclick={() => toggleSort('local', 'name')} title="按名称排序（再点切换顺序/倒序）">名称{sortMark(localSort, 'name')}</button>
@@ -638,7 +640,8 @@
         <span class="ico"></span>
         {#if wide}
           <span class="fperm">权限</span>
-          <span class="fown">所有者</span>
+          <button type="button" class="ch fown" class:on={remoteSort.key === 'owner'}
+                  onclick={() => toggleSort('remote', 'owner')} title="按所有者排序（再点切换顺序/倒序）">所有者{sortMark(remoteSort, 'owner')}</button>
         {/if}
         <button type="button" class="ch ch-name" class:on={remoteSort.key === 'name'}
                 onclick={() => toggleSort('remote', 'name')} title="按名称排序（再点切换顺序/倒序）">名称{sortMark(remoteSort, 'name')}</button>
@@ -765,6 +768,7 @@
   .colhead .ch:hover { color: #cfe1ff; }
   .colhead .ch.on { color: #8ab4f8; }
   .colhead .ch.ch-name { flex: 1; min-width: 0; text-align: left; }
+  .colhead .ch.fown { text-align: left; }
   .fdate { width: 76px; flex-shrink: 0; text-align: right; color: #666; }
   .empty { color: #666; padding: 8px; }
   .ops { display: flex; gap: 4px; padding: 4px; border-top: 1px solid #2a2a2a; flex-wrap: wrap; }
